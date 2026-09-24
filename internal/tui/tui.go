@@ -1083,13 +1083,21 @@ func (m *model) View() string {
 	if !m.ready {
 		return ""
 	}
+	// Pin the input box to the terminal width: lipgloss otherwise shrinks it to
+	// the widest line, so a short collapsed summary or approval prompt would
+	// make the box narrower than the rest of the UI. Width includes padding but
+	// not the border, hence the -2.
+	box := m.styles.inputBox
+	if w := m.width - 2; w > 0 {
+		box = box.Width(w)
+	}
 	var b strings.Builder
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 	if m.permReq != nil {
-		b.WriteString(m.styles.inputBox.Render(m.permissionView()))
+		b.WriteString(box.Render(m.permissionView()))
 	} else {
-		b.WriteString(m.styles.inputBox.Render(m.inputDisplay()))
+		b.WriteString(box.Render(m.inputDisplay()))
 	}
 	b.WriteString("\n")
 	b.WriteString(m.statusView())

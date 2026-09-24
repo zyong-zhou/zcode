@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/zhouyong/zcode/internal/backup"
 	"github.com/zhouyong/zcode/internal/command"
@@ -1025,5 +1026,35 @@ func TestModelInputHeightStaysFixed(t *testing.T) {
 	collapsed := lines()
 	if uncollapsed != collapsed {
 		t.Errorf("view height changed on collapse: %d -> %d", uncollapsed, collapsed)
+	}
+}
+
+func TestModelInputBoxWidthStaysFull(t *testing.T) {
+	m := newTestModel()
+	// The input box's top border is the only line carrying both corners.
+	boxWidth := func() int {
+		for _, l := range strings.Split(m.View(), "\n") {
+			if strings.Contains(l, "╭") && strings.Contains(l, "╮") {
+				return lipgloss.Width(l)
+			}
+		}
+		return -1
+	}
+
+	before := boxWidth()
+	if before != 80 {
+		t.Fatalf("input box width = %d, want the terminal width 80", before)
+	}
+
+	// A short collapsed summary must not shrink the box.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb\nc\nd"), Paste: true})
+	if after := boxWidth(); after != before {
+		t.Errorf("collapsed input box width = %d, want %d", after, before)
+	}
+
+	// Neither must a short approval prompt.
+	m.permReq = &zcode.PermissionRequest{Tool: "run_command", Preview: "go build ./..."}
+	if after := boxWidth(); after != before {
+		t.Errorf("permission input box width = %d, want %d", after, before)
 	}
 }
