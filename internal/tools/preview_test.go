@@ -61,6 +61,25 @@ func TestPreviewBadArgsIsEmpty(t *testing.T) {
 	}
 }
 
+func TestPreviewTruncateWidth(t *testing.T) {
+	// A non-positive width means "do not truncate".
+	if got := truncateWidth("abc", 0); got != "abc" {
+		t.Errorf("truncateWidth(abc, 0) = %q, want abc", got)
+	}
+	if got := truncateWidth("abc", 3); got != "abc" {
+		t.Errorf("truncateWidth(abc, 3) = %q, want abc", got)
+	}
+	if got := truncateWidth("abcd", 2); got != "ab…" {
+		t.Errorf("truncateWidth(abcd, 2) = %q, want ab…", got)
+	}
+}
+
+func TestOneLineCollapsesWhitespace(t *testing.T) {
+	if got := oneLine("  a \n\t b  ", 100); got != "a b" {
+		t.Errorf("oneLine = %q, want a b", got)
+	}
+}
+
 // quote JSON-encodes s as a string literal.
 func quote(s string) string {
 	var b strings.Builder

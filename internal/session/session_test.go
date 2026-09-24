@@ -251,3 +251,85 @@ func TestManagerDeleteAndRenameActive(t *testing.T) {
 		t.Errorf("Append without an active session = %v, want nil", err)
 	}
 }
+
+func TestManagerListLatestReset(t *testing.T) {
+	m := NewManager(Store{Dir: t.TempDir()})
+	defer m.Close()
+
+	// With no sessions, list/latest/reset are all no-ops.
+	if infos, err := m.List(); err != nil || len(infos) != 0 {
+		t.Fatalf("empty List = %v, %v", infos, err)
+	}
+	if id, err := m.Latest(); err != nil || id != "" {
+		t.Fatalf("empty Latest = %q, %v", id, err)
+	}
+	if err := m.Reset(); err != nil {
+		t.Errorf("Reset with no active session = %v, want nil", err)
+	}
+
+	id, err := m.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Append(llm.Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if msgs, _ := m.Load(); len(msgs) != 0 {
+		t.Errorf("after Reset loaded %d messages, want 0", len(msgs))
+	}
+	if got, _ := m.Latest(); got != id {
+		t.Errorf("Latest = %q, want %q", got, id)
+	}
+	infos, err := m.List()
+	if err != nil || len(infos) != 1 || infos[0].ID != id {
+		t.Errorf("List = %+v, %v; want the one session %q", infos, err, id)
+	}
+}
+
+func TestStoreEnsureErrorsAndNilSession(t *testing.T) {
+	if _, err := (Store{}).New(); err == nil {
+		t.Error("New with an empty directory should fail")
+	}
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Store{Dir: file}).New(); err == nil {
+		t.Error("New when Dir is a regular file should fail")
+	}
+
+	// A nil session is a safe no-op for Append, Reset, and Load.
+	var s *Session
+	if err := s.Append(llm.Message{Role: "user", Content: "x"}); err != nil {
+		t.Errorf("nil Append = %v", err)
+	}
+	if err := s.Reset(); err != nil {
+		t.Errorf("nil Reset = %v", err)
+	}
+	if msgs, err := s.Load(); err != nil || msgs != nil {
+		t.Errorf("nil Load = %v, %v; want nil, nil", msgs, err)
+	}
+}
+
+func TestPreviewUsesLastUserMessage(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "reply"},
+		{Role: "user", Content: "  second   question  "},
+	}
+	if got := preview(msgs); got != "second question" {
+		t.Errorf("preview = %q, want the last user message collapsed", got)
+	}
+	if got := preview(nil); got != "" {
+		t.Errorf("preview(nil) = %q, want empty", got)
+	}
+
+	long := preview([]llm.Message{{Role: "user", Content: strings.Repeat("字", 80)}})
+	r := []rune(long)
+	if len(r) != 61 || r[len(r)-1] != '…' {
+		t.Errorf("long preview rune length = %d (%q), want 60 + ellipsis", len(r), long)
+	}
+}

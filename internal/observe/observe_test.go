@@ -54,3 +54,27 @@ func TestOneLine(t *testing.T) {
 		t.Errorf("truncate = %q", got)
 	}
 }
+
+func TestTextObserverStatusEvents(t *testing.T) {
+	var buf bytes.Buffer
+	obs := Text(&buf)
+	// An errored tool result with blank output must not print a body line.
+	obs(zcode.Event{Step: 3, Kind: zcode.EventToolResult, Tool: "run_command", Err: "boom", Result: "   "})
+	obs(zcode.Event{Step: 3, Kind: zcode.EventPermission, Tool: "write_file", Result: "allow"})
+	obs(zcode.Event{Step: 3, Kind: zcode.EventCompact, Result: "压缩完成"})
+	obs(zcode.Event{Step: 3, Kind: zcode.EventWarning, Err: "警告内容"})
+	obs(zcode.Event{Step: 4, Kind: zcode.EventLimit, Err: "达到上限"})
+
+	out := buf.String()
+	for _, want := range []string{
+		"error: boom",
+		"permission write_file: allow",
+		"压缩完成",
+		"warning: 警告内容",
+		"stopped: 达到上限",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}

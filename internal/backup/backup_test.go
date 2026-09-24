@@ -153,3 +153,52 @@ func TestDropRemovesSnapshot(t *testing.T) {
 		t.Error("Drop accepted a malformed id")
 	}
 }
+
+func TestSnapshotIDsAreUnique(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(src, []byte("v"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Store{Dir: filepath.Join(root, "b"), Root: root}
+
+	// Two snapshots taken back-to-back must not collide, even when the clock
+	// returns the same nanosecond (coarse Windows timer).
+	id1, err := s.Snapshot("a.txt", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := s.Snapshot("a.txt", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == id2 {
+		t.Fatalf("snapshot ids collide: %q", id1)
+	}
+	list, err := s.List()
+	if err != nil || len(list) != 2 {
+		t.Fatalf("List = %d entries, err=%v; want 2", len(list), err)
+	}
+	for _, e := range list {
+		if e.Source != "a.txt" {
+			t.Errorf("entry source = %q, want a.txt", e.Source)
+		}
+	}
+}
+
+func TestResolveRejectsBadPaths(t *testing.T) {
+	root := t.TempDir()
+	got, err := resolve(root, "a/b.txt")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("resolve = %q, want an absolute path", got)
+	}
+	if _, err := resolve(root, "  "); err == nil {
+		t.Error("resolve should reject an empty path")
+	}
+	if _, err := resolve(root, "../evil"); err == nil {
+		t.Error("resolve should reject a path escaping the root")
+	}
+}

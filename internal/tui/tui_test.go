@@ -561,6 +561,103 @@ func TestModelMCPCommand(t *testing.T) {
 	}
 }
 
+func TestModelSessionCommandAndNew(t *testing.T) {
+	mgr := session.NewManager(session.Store{Dir: t.TempDir()})
+	defer mgr.Close()
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	ag.Transcript = mgr
+	m := newModel(ag, Options{Root: ".", Model: "test-model", Sessions: mgr})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m.command("/session")
+	if v := m.View(); !strings.Contains(v, "当前没有活动会话") {
+		t.Errorf("/session with no active session:\n%s", v)
+	}
+	m.command("/new")
+	if v := m.View(); !strings.Contains(v, "新会话") {
+		t.Errorf("/new did not report the new session:\n%s", v)
+	}
+	m.command("/session")
+	if v := m.View(); !strings.Contains(v, "当前会话") {
+		t.Errorf("/session did not report the active session:\n%s", v)
+	}
+}
+
+func TestModelSessionCommandErrors(t *testing.T) {
+	mgr := session.NewManager(session.Store{Dir: t.TempDir()})
+	defer mgr.Close()
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	ag.Transcript = mgr
+	m := newModel(ag, Options{Root: ".", Model: "test-model", Sessions: mgr})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	for _, tc := range []struct{ cmd, want string }{
+		{"/delete", "用法：/delete"},
+		{"/rename", "用法：/rename"},
+		{"/resume", "用法：/resume"},
+		{"/resume 99", "超出范围"},
+		{"/delete missing", "删除会话失败"},
+		{"/rename missing new", "重命名会话失败"},
+		{"/resume missing", "恢复会话失败"},
+	} {
+		m.command(tc.cmd)
+		if v := m.View(); !strings.Contains(v, tc.want) {
+			t.Errorf("%s: view missing %q:\n%s", tc.cmd, tc.want, v)
+		}
+	}
+}
+
+func TestModelHandleEventKinds(t *testing.T) {
+	m := newTestModel()
+	for _, e := range []zcode.Event{
+		{Kind: zcode.EventToolCall, Tool: "read_file", Args: `{"path":"a"}`},
+		{Kind: zcode.EventToolResult, Tool: "read_file", Result: "hello"},
+		{Kind: zcode.EventThought, Content: "思考中"},
+		{Kind: zcode.EventPermission, Tool: "run_command", Result: "deny"},
+		{Kind: zcode.EventCompact, Result: "10 → 5"},
+		{Kind: zcode.EventWarning, Err: "小心"},
+		{Kind: zcode.EventLimit, Err: "达到上限"},
+	} {
+		_, _ = m.Update(eventMsg(e))
+	}
+	v := m.View()
+	for _, want := range []string{"read_file", "权限 run_command", "已压缩上下文", "小心", "达到上限", "思考中"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("view missing %q:\n%s", want, v)
+		}
+	}
+}
+
+func TestModelBackupsEmpty(t *testing.T) {
+	root := t.TempDir()
+	st := &backup.Store{Dir: filepath.Join(root, "b"), Root: root}
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m := newModel(ag, Options{Root: root, Model: "test-model", Backups: st})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m.command("/backups")
+	if v := m.View(); !strings.Contains(v, "暂无备份") {
+		t.Errorf("/backups with no snapshots:\n%s", v)
+	}
+	m.command("/undo")
+	if v := m.View(); !strings.Contains(v, "没有可撤销") {
+		t.Errorf("/undo with no snapshots:\n%s", v)
+	}
+}
+
+func TestModelToggleModeFromPlan(t *testing.T) {
+	m := newTestModel()
+	m.ag.SetMode(zcode.ModePlan)
+	m.toggleMode()
+	if m.ag.Mode != zcode.ModeBuild {
+		t.Errorf("toggle from plan = %q, want build", m.ag.Mode)
+	}
+	m.toggleMode()
+	if m.ag.Mode != zcode.ModePlan {
+		t.Errorf("toggle from build = %q, want plan", m.ag.Mode)
+	}
+}
+
 func TestModelSessionManagement(t *testing.T) {
 	dir := t.TempDir()
 	mgr := session.NewManager(session.Store{Dir: dir})
@@ -607,5 +704,120 @@ func TestModelSessionManagement(t *testing.T) {
 	m.command("/delete 99")
 	if v := m.View(); !strings.Contains(v, "超出范围") {
 		t.Errorf("out-of-range index should error:\n%s", v)
+	}
+}
+
+func TestModelSessionListAndNewErrors(t *testing.T) {
+	// A regular file where the session directory should be makes New fail,
+	// exercising its error branch.
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := session.NewManager(session.Store{Dir: file})
+	defer mgr.Close()
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m := newModel(ag, Options{Root: ".", Model: "test-model", Sessions: mgr})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m.command("/new")
+	if v := m.View(); !strings.Contains(v, "新建会话失败") {
+		t.Errorf("/new error branch missing:\n%s", v)
+	}
+	// Listing a non-directory yields no sessions (the path is treated as empty).
+	m.command("/sessions")
+	if v := m.View(); !strings.Contains(v, "没有历史会话") {
+		t.Errorf("/sessions empty branch missing:\n%s", v)
+	}
+}
+
+func TestModelReplayTranscript(t *testing.T) {
+	mgr := session.NewManager(session.Store{Dir: t.TempDir()})
+	defer mgr.Close()
+	if _, err := mgr.New(); err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range []llm.Message{
+		{Role: "user", Content: "问题"},
+		{Role: "assistant", Content: "回答"},
+		{Role: "tool", Content: "ignored"},
+	} {
+		if err := mgr.Append(msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m := newModel(ag, Options{Root: ".", Model: "test-model", Sessions: mgr})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.replayTranscript()
+	m.layout()
+
+	v := m.View()
+	if !strings.Contains(v, "问题") || !strings.Contains(v, "回答") {
+		t.Errorf("replay missing restored user/assistant messages:\n%s", v)
+	}
+	if strings.Contains(v, "ignored") {
+		t.Errorf("replay rendered a non user/assistant message:\n%s", v)
+	}
+}
+
+func TestModelActivity(t *testing.T) {
+	m := newTestModel()
+	if got := m.activity(); !strings.Contains(got, "思考") {
+		t.Errorf("activity with no tool = %q, want 思考中", got)
+	}
+	m.lastTool = "read_file"
+	if got := m.activity(); !strings.Contains(got, "read_file") {
+		t.Errorf("activity with a tool = %q, want the tool name", got)
+	}
+}
+
+func TestModelKeyBranches(t *testing.T) {
+	m := newTestModel()
+
+	// Ctrl+C returns the quit command.
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil {
+		t.Error("Ctrl+C should return tea.Quit")
+	}
+	// Page keys scroll the viewport.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	// Ctrl+J inserts a newline instead of submitting.
+	m.input.SetValue("line")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	if !strings.Contains(m.input.Value(), "\n") {
+		t.Errorf("Ctrl+J should insert a newline, got %q", m.input.Value())
+	}
+	// Enter on empty input does nothing.
+	m.input.Reset()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.busy {
+		t.Error("Enter with empty input should not start a run")
+	}
+	// Mouse messages are forwarded to the viewport.
+	_, _ = m.Update(tea.MouseMsg{})
+}
+
+func TestModelBackupsTruncatesLongList(t *testing.T) {
+	root := t.TempDir()
+	st := &backup.Store{Dir: filepath.Join(root, "b"), Root: root}
+	src := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		if _, err := st.Snapshot("a.txt", src); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m := newModel(ag, Options{Root: root, Model: "test-model", Backups: st})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.command("/backups")
+	if v := m.View(); !strings.Contains(v, "还有") {
+		t.Errorf("/backups should truncate a long list:\n%s", v)
 	}
 }

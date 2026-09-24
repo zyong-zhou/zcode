@@ -26,3 +26,35 @@ func TestWrapText(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncateWidth(t *testing.T) {
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"hello", 0, ""},
+		{"hello", 10, "hello"},
+		{"hello", 5, "hello"},
+		{"hello", 3, "he…"},
+		{"hello", 1, "…"},
+		{"你好世界", 5, "你好…"},
+	}
+	for _, tc := range cases {
+		if got := truncateWidth(tc.in, tc.max); got != tc.want {
+			t.Errorf("truncateWidth(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+		}
+	}
+}
+
+func TestTruncateLines(t *testing.T) {
+	if got := truncateLines("a\nb", 0, 5); got != "" {
+		t.Errorf("zero lines = %q, want empty", got)
+	}
+	if got := truncateLines("a\nb\nc", 2, 5); got != "a\nb\n…" {
+		t.Errorf("truncateLines = %q, want a\\nb\\n…", got)
+	}
+	if got := truncateLines("abcdef", 1, 3); got != "ab…" {
+		t.Errorf("truncateLines width = %q, want ab…", got)
+	}
+}

@@ -64,7 +64,17 @@ func (s Store) Snapshot(source, abs string) (string, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", fmt.Errorf("backup: mkdir: %w", err)
 	}
-	id := fmt.Sprintf("%d-%s", time.Now().UnixNano(), encodeSource(source))
+	// The id is <unixnano>-<base64url(source)>. A coarse clock can return the
+	// same timestamp twice in a row, so bump the numeric prefix until the name
+	// is free; keep the digit count stable so lexical order stays time order.
+	nano := time.Now().UnixNano()
+	var id string
+	for i := int64(0); ; i++ {
+		id = fmt.Sprintf("%d-%s", nano+i, encodeSource(source))
+		if _, err := os.Stat(filepath.Join(s.Dir, id+ext)); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+	}
 	if err := os.WriteFile(filepath.Join(s.Dir, id+ext), data, 0o644); err != nil {
 		return "", fmt.Errorf("backup: write: %w", err)
 	}
