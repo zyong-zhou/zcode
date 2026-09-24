@@ -884,8 +884,8 @@ func TestModelPasteCollapsesMultiLine(t *testing.T) {
 	if got := m.input.Value(); got != full {
 		t.Errorf("full pasted text was not preserved: %q", got)
 	}
-	if h := m.input.Height(); h != 1 {
-		t.Errorf("collapsed input height = %d, want 1", h)
+	if h := m.input.Height(); h != inputMinHeight {
+		t.Errorf("collapsed input height = %d, want the fixed %d", h, inputMinHeight)
 	}
 
 	// A real Enter comes after a pause and sends the full multi-line text.
@@ -996,5 +996,34 @@ func TestModelSingleLinePasteDoesNotCollapse(t *testing.T) {
 	}
 	if got := m.input.Value(); got != "hello world" {
 		t.Errorf("value = %q, want hello world", got)
+	}
+}
+
+func TestModelInputHeightStaysFixed(t *testing.T) {
+	m := newTestModel()
+	base := m.input.Height()
+
+	// Many manual lines must not grow the box.
+	for i := 0; i < 10; i++ {
+		_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	}
+	if got := m.input.Height(); got != base {
+		t.Errorf("input height after 10 lines = %d, want the fixed %d", got, base)
+	}
+
+	// A collapsed paste must not shrink it either.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb\nc\nd"), Paste: true})
+	if got := m.input.Height(); got != base {
+		t.Errorf("input height while collapsed = %d, want the fixed %d", got, base)
+	}
+
+	// The rendered view keeps the same height whether or not it is collapsed.
+	lines := func() int { return len(strings.Split(m.View(), "\n")) }
+	m.pasteCollapsed = false
+	uncollapsed := lines()
+	m.pasteCollapsed = true
+	collapsed := lines()
+	if uncollapsed != collapsed {
+		t.Errorf("view height changed on collapse: %d -> %d", uncollapsed, collapsed)
 	}
 }

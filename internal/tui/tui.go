@@ -26,11 +26,9 @@ import (
 )
 
 const (
-	// inputMinHeight is the resting height of the input box in rows, so it
-	// reads as a multi-line editor even before the user types.
+	// inputMinHeight is the fixed height of the input box in rows. The box
+	// never grows or shrinks; longer content scrolls inside it.
 	inputMinHeight = 3
-	// inputMaxHeight caps how tall the input grows before it scrolls.
-	inputMaxHeight = 8
 	// pasteBurst is the largest gap between two key events that still counts as
 	// one paste. The Windows console hands a paste over as a burst of
 	// single-rune messages and leaves KeyMsg.Paste false, so a pasted line
@@ -220,7 +218,7 @@ func newModel(ag *zcode.Agent, opts Options) *model {
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
-	ta.MaxHeight = inputMaxHeight
+	ta.MaxHeight = inputMinHeight
 	ta.SetHeight(inputMinHeight)
 	ta.Focus()
 
@@ -1009,18 +1007,8 @@ func (m *model) layout() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-	lines := m.input.LineCount()
-	if m.pasteCollapsed {
-		// A collapsed paste shows as a single summary line.
-		lines = 1
-	} else {
-		if lines < inputMinHeight {
-			lines = inputMinHeight
-		}
-		if lines > inputMaxHeight {
-			lines = inputMaxHeight
-		}
-	}
+	// The input box keeps a fixed height; longer content scrolls inside it.
+	lines := inputMinHeight
 	m.input.SetHeight(lines)
 	m.input.SetWidth(m.width - 4)
 
@@ -1116,9 +1104,18 @@ func (m *model) inputDisplay() string {
 		if width < 10 {
 			width = 10
 		}
-		return collapsedPaste(m.input.Value(), width)
+		// Pad to the fixed box height so collapsing never resizes the box.
+		return padLines(collapsedPaste(m.input.Value(), width), inputMinHeight)
 	}
 	return m.input.View()
+}
+
+// padLines appends empty lines so s occupies at least n rows.
+func padLines(s string, n int) string {
+	if n < 2 {
+		return s
+	}
+	return s + strings.Repeat("\n", n-1)
 }
 
 // pasteText normalizes pasted text and reports whether it spans multiple lines.
