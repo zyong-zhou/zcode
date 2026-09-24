@@ -821,3 +821,119 @@ func TestModelBackupsTruncatesLongList(t *testing.T) {
 		t.Errorf("/backups should truncate a long list:\n%s", v)
 	}
 }
+
+func TestCollapsedPaste(t *testing.T) {
+	got := collapsedPaste("第一行\n第二行\n第三行", 80)
+	for _, want := range []string{"第一行", "第三行", "....", "共 3 行"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("collapsedPaste missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "第二行") {
+		t.Errorf("collapsedPaste should elide the middle: %q", got)
+	}
+
+	// A single line passes through unchanged.
+	if got := collapsedPaste("只有一行", 80); got != "只有一行" {
+		t.Errorf("single line = %q, want 只有一行", got)
+	}
+
+	// A narrow box keeps the head, the separator, and the tail without
+	// overflowing the column budget.
+	narrow := collapsedPaste(strings.Repeat("前", 30)+"\n"+strings.Repeat("后", 30), 40)
+	if !strings.Contains(narrow, "....") {
+		t.Errorf("narrow paste lost the separator: %q", narrow)
+	}
+	if strings.Count(narrow, "前") > 15 || strings.Count(narrow, "后") > 15 {
+		t.Errorf("narrow paste was not truncated: %q", narrow)
+	}
+}
+
+func TestPasteText(t *testing.T) {
+	if _, multi := pasteText([]rune("hello")); multi {
+		t.Error("a single-line paste should not be multi-line")
+	}
+	if _, multi := pasteText(nil); multi {
+		t.Error("an empty paste should not be multi-line")
+	}
+	text, multi := pasteText([]rune("a\r\nb"))
+	if !multi || text != "a\nb" {
+		t.Errorf("pasteText(CRLF) = %q, %v; want a\\nb, true", text, multi)
+	}
+}
+
+func TestModelPasteCollapsesMultiLine(t *testing.T) {
+	m := newTestModel()
+	full := "第一行\n第二行\n第三行\n第四行"
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(full), Paste: true})
+
+	if !m.pasteCollapsed {
+		t.Fatal("a multi-line paste should collapse the input")
+	}
+	v := m.View()
+	if !strings.Contains(v, "第一行 .... 第四行") {
+		t.Errorf("collapsed summary missing:\n%s", v)
+	}
+	if strings.Contains(v, "第二行") {
+		t.Errorf("collapsed summary should hide middle lines:\n%s", v)
+	}
+	if !strings.Contains(v, "共 4 行") {
+		t.Errorf("collapsed summary should show the line count:\n%s", v)
+	}
+	if got := m.input.Value(); got != full {
+		t.Errorf("full pasted text was not preserved: %q", got)
+	}
+	if h := m.input.Height(); h != 1 {
+		t.Errorf("collapsed input height = %d, want 1", h)
+	}
+
+	// Enter sends the full multi-line text, not the summary.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(m.blocks) == 0 {
+		t.Fatal("Enter should start a request")
+	}
+	last := m.blocks[len(m.blocks)-1]
+	if last.role != roleUser || last.text != full {
+		t.Errorf("submitted block = %+v, want the full pasted text", last)
+	}
+}
+
+func TestModelEditingRevealsCollapsedPaste(t *testing.T) {
+	m := newTestModel()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb\nc"), Paste: true})
+	if !m.pasteCollapsed {
+		t.Fatal("expected a collapsed paste")
+	}
+
+	// A normal keypress is an edit and reveals the full text again.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	if m.pasteCollapsed {
+		t.Error("typing should reveal the full text")
+	}
+	if v := m.View(); !strings.Contains(v, "b") {
+		t.Errorf("editing should show the full text:\n%s", v)
+	}
+}
+
+func TestModelCtrlJRevealsCollapsedPaste(t *testing.T) {
+	m := newTestModel()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x\ny"), Paste: true})
+	if !m.pasteCollapsed {
+		t.Fatal("expected a collapsed paste")
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	if m.pasteCollapsed {
+		t.Error("Ctrl+J is an edit and should reveal the full text")
+	}
+}
+
+func TestModelSingleLinePasteDoesNotCollapse(t *testing.T) {
+	m := newTestModel()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello world"), Paste: true})
+	if m.pasteCollapsed {
+		t.Error("a single-line paste should not collapse")
+	}
+	if got := m.input.Value(); got != "hello world" {
+		t.Errorf("value = %q, want hello world", got)
+	}
+}

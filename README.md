@@ -27,6 +27,7 @@ go build -o bin\zcode.exe ./cmd/zcode
 TUI 键位与命令：
 
 - `Enter` 发送 · `Ctrl+J` 换行 · `Shift+Tab` 切换 Plan/Build · `PgUp/PgDn` 或滚轮滚动 · `Esc` 取消当前请求 · `Ctrl+C` 退出
+- 粘贴多行文本时输入框会收缩为一行摘要（`首行 .... 末行（共 N 行）`），内容完整保留，`Enter` 仍发送全部文本；再次编辑即展开
 - `/help` 帮助 · `/reset` 清空上下文 · `/clear` 只清屏 · `/model` 查看/切换模型（`/model <名字>`）
 - `/cost` 查看累计 token 用量 · `/context` 查看上下文估算与上限 · `/compact` 立即压缩上下文
 - `/plan` · `/build` 切换模式 · `/mode` 查看当前模式

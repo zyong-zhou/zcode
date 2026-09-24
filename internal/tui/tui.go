@@ -178,8 +178,12 @@ type model struct {
 	cancel   context.CancelFunc
 	lastTool string
 	status   string
-	turns    int
-	usage    llm.Usage
+	// pasteCollapsed hides a multi-line paste behind a one-line summary in the
+	// input box while the full text stays in the textarea. The next edit reveals
+	// the real content again.
+	pasteCollapsed bool
+	turns          int
+	usage          llm.Usage
 
 	// turnStart and lastCost measure how long the most recent request took; the
 	// duration is shown in the status line once it finishes.
@@ -261,6 +265,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Any other key is an edit or a cursor move: reveal the full text so the
+	// user can see what they are changing.
+	m.pasteCollapsed = false
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.layout()
@@ -276,6 +283,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return m.answerPermission(msg), true
 	}
+	// A multi-line paste is hidden behind a one-line summary while the full text
+	// is inserted, so Enter still sends every line.
+	if msg.Paste {
+		if text, multi := pasteText(msg.Runes); multi {
+			m.input.InsertString(text)
+			m.pasteCollapsed = true
+			m.layout()
+			return nil, true
+		}
+	}
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit, true
@@ -288,6 +305,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	case tea.KeyCtrlJ:
 		m.input.InsertString("\n")
+		m.pasteCollapsed = false
 		m.layout()
 		return nil, true
 	case tea.KeyPgUp, tea.KeyPgDown:
@@ -306,6 +324,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		m.input.Reset()
+		m.pasteCollapsed = false
 		if strings.HasPrefix(text, "/") {
 			return m.command(text), true
 		}
@@ -953,11 +972,16 @@ func (m *model) layout() {
 		return
 	}
 	lines := m.input.LineCount()
-	if lines < inputMinHeight {
-		lines = inputMinHeight
-	}
-	if lines > inputMaxHeight {
-		lines = inputMaxHeight
+	if m.pasteCollapsed {
+		// A collapsed paste shows as a single summary line.
+		lines = 1
+	} else {
+		if lines < inputMinHeight {
+			lines = inputMinHeight
+		}
+		if lines > inputMaxHeight {
+			lines = inputMaxHeight
+		}
 	}
 	m.input.SetHeight(lines)
 	m.input.SetWidth(m.width - 4)
@@ -1039,11 +1063,64 @@ func (m *model) View() string {
 	if m.permReq != nil {
 		b.WriteString(m.styles.inputBox.Render(m.permissionView()))
 	} else {
-		b.WriteString(m.styles.inputBox.Render(m.input.View()))
+		b.WriteString(m.styles.inputBox.Render(m.inputDisplay()))
 	}
 	b.WriteString("\n")
 	b.WriteString(m.statusView())
 	return b.String()
+}
+
+// inputDisplay renders the input box body: a one-line summary for a collapsed
+// multi-line paste, otherwise the full editor.
+func (m *model) inputDisplay() string {
+	if m.pasteCollapsed {
+		width := m.width - 4
+		if width < 10 {
+			width = 10
+		}
+		return collapsedPaste(m.input.Value(), width)
+	}
+	return m.input.View()
+}
+
+// pasteText normalizes pasted text and reports whether it spans multiple lines.
+func pasteText(runes []rune) (string, bool) {
+	if len(runes) == 0 {
+		return "", false
+	}
+	s := strings.ReplaceAll(string(runes), "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return s, strings.Contains(s, "\n")
+}
+
+// collapsedPaste summarizes multi-line text as "first .... last（共 N 行）",
+// keeping the head and tail visible within width display columns.
+func collapsedPaste(full string, width int) string {
+	lines := strings.Split(strings.ReplaceAll(full, "\r\n", "\n"), "\n")
+	if len(lines) < 2 {
+		return truncateWidth(full, width)
+	}
+	first := strings.TrimSpace(lines[0])
+	last := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			last = t
+			break
+		}
+	}
+	suffix := fmt.Sprintf("（共 %d 行）", len(lines))
+	if last == "" || last == first {
+		return truncateWidth(first+suffix, width)
+	}
+	const sep = " .... "
+	budget := width - lipgloss.Width(sep) - lipgloss.Width(suffix)
+	if budget < 6 {
+		// Not enough room for two ends; fall back to a plain head/tail cut.
+		return truncateWidth(first+sep+last+suffix, width)
+	}
+	head := truncateWidth(first, budget/2)
+	tail := truncateWidth(last, budget-budget/2)
+	return head + sep + tail + suffix
 }
 
 // formatDuration renders a request duration compactly for the status line.
