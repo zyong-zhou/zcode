@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Configure Go proxy
+        shell: pwsh
+        run: go env -w GOPROXY=https://goproxy.cn,direct
+
+      - name: Test
+        shell: pwsh
+        run: go test ./... -count=1
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          go build -ldflags "-X main.version=$version" -o dist/zcode.exe ./cmd/zcode
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item config.example.json dist/
+          Copy-Item README.md dist/
+          Compress-Archive -Path dist/zcode.exe, dist/config.example.json, dist/README.md `
+            -DestinationPath dist/zcode-windows-amd64.zip -Force
+          $hash = (Get-FileHash dist/zcode-windows-amd64.zip -Algorithm SHA256).Hash
+          "$hash  zcode-windows-amd64.zip" | Set-Content dist/checksums.txt
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/zcode-windows-amd64.zip
+            dist/checksums.txt
+          generate_release_notes: true

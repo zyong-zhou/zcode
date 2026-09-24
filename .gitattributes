@@ -1,0 +1,12 @@
+# Keep line endings stable so gofmt/gofmt-checks behave the same on every OS
+# (a Windows checkout with CRLF would otherwise be flagged by `gofmt -l`).
+* text=auto
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.gitignore text eol=lf
+*.gitattributes text eol=lf

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      # proxy.golang.org is often unreachable from mainland China; mirror first.
+      - name: Configure Go proxy
+        shell: pwsh
+        run: go env -w GOPROXY=https://goproxy.cn,direct
+
+      - name: Download modules
+        shell: pwsh
+        run: go mod download
+
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $files = gofmt -l .
+          if ($files) {
+            Write-Host "These files need gofmt:"
+            $files | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+
+      - name: Vet
+        shell: pwsh
+        run: go vet ./...
+
+      - name: Test
+        shell: pwsh
+        run: go test ./... -count=1
+
+      - name: Build
+        shell: pwsh
+        run: go build -o bin/zcode.exe ./cmd/zcode

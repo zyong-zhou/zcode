@@ -1,0 +1,49 @@
+{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "sk-replace-me",
+  "model": "gpt-4o-mini",
+  "max_steps": 12,
+  "timeout_seconds": 300,
+  "mode": "build",
+  "modes": {
+    "plan": { "system": "" },
+    "build": { "system": "" }
+  },
+  "memory": {
+    "enabled": true,
+    "path": ".zcode/memory.md"
+  },
+  "rules": {
+    "enabled": true,
+    "files": ["AGENTS.md"]
+  },
+  "session": {
+    "enabled": true,
+    "dir": ".zcode/sessions"
+  },
+  "context": {
+    "max_tokens": 0,
+    "compact_at": 0.75,
+    "keep_recent": 6
+  },
+  "permissions": {
+    "default": "allow",
+    "tools": {},
+    "commands": {
+      "allow": ["go test", "go build", "gofmt", "go vet"],
+      "deny": []
+    }
+  },
+  "mcp": {
+    "enabled": false,
+    "servers": [
+      {
+        "name": "example",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        "read_only": true,
+        "enabled": false
+      }
+    ]
+  }
+}

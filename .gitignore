@@ -1,0 +1,20 @@
+# Build output. The packaged bin/ directory is not tracked: it holds the real
+# config.json (API key) plus local artifacts; use config.example.json instead.
+zcode.exe
+/bin/
+# Windows leaves a locked backup of a running exe behind after a rebuild.
+*.exe~
+
+# Local config contains the API key; use config.example.json as a template.
+config.json
+
+# Final designs produced by the agent
+design.md
+
+# JSONL traces written by -trace
+trace.jsonl
+*.trace.jsonl
+
+# Persisted conversations and edit backups (project memory stays tracked).
+.zcode/sessions/
+.zcode/backups/
