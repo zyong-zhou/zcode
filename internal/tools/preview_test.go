@@ -42,6 +42,19 @@ func TestPreviewUnsupportedToolIsEmpty(t *testing.T) {
 	}
 }
 
+func TestRunCommandPreview(t *testing.T) {
+	p, ok := (RunCommand{}).Preview(`{"command":"go","args":["test","./..."]}`)
+	if !ok {
+		t.Fatal("expected a preview")
+	}
+	if !strings.Contains(p, "go test ./...") {
+		t.Errorf("preview = %q, want the full command line", p)
+	}
+	if _, ok := (RunCommand{}).Preview(`{"command":"  "}`); ok {
+		t.Error("blank command should have no preview")
+	}
+}
+
 func TestPreviewBadArgsIsEmpty(t *testing.T) {
 	if p := Preview(WriteFile{Root: "."}, `{bad json`); p != "" {
 		t.Errorf("preview = %q, want empty for bad args", p)

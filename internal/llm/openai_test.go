@@ -119,3 +119,30 @@ func TestOpenAIClientChatStream(t *testing.T) {
 		t.Errorf("request should stream with usage: %+v", got)
 	}
 }
+
+func TestOpenAIClientSetModel(t *testing.T) {
+	var got wireRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := NewOpenAIClient(srv.URL, "k", "old-model")
+	if c.Model != "old-model" {
+		t.Fatalf("initial model = %q", c.Model)
+	}
+	c.SetModel(" new-model ")
+	if c.Model != "new-model" {
+		t.Errorf("model = %q, want trimmed new-model", c.Model)
+	}
+	if _, err := c.Chat(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got.Model != "new-model" {
+		t.Errorf("request model = %q, want new-model", got.Model)
+	}
+}

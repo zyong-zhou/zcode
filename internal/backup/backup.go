@@ -18,10 +18,13 @@ import (
 const ext = ".bak"
 
 // Store is a directory of snapshots tied to a project root. Root is used to
-// resolve a snapshot's source path on restore.
+// resolve a snapshot's source path on restore. Keep bounds how many snapshots
+// are retained; the oldest are pruned when the limit is exceeded (0 disables
+// pruning).
 type Store struct {
 	Dir  string
 	Root string
+	Keep int
 }
 
 // Entry describes one stored snapshot.
@@ -65,7 +68,36 @@ func (s Store) Snapshot(source, abs string) (string, error) {
 	if err := os.WriteFile(filepath.Join(s.Dir, id+ext), data, 0o644); err != nil {
 		return "", fmt.Errorf("backup: write: %w", err)
 	}
+	// Retention is best-effort: a pruning failure must not block the write.
+	_ = s.prune()
 	return id, nil
+}
+
+// prune deletes the oldest snapshots so at most Keep remain.
+func (s Store) prune() error {
+	if s.Keep <= 0 {
+		return nil
+	}
+	list, err := s.List()
+	if err != nil {
+		return err
+	}
+	for i := s.Keep; i < len(list); i++ {
+		_ = os.Remove(list[i].Path)
+	}
+	return nil
+}
+
+// Drop deletes the snapshot identified by id. A missing snapshot is not an
+// error, so a restore-then-drop sequence is safe to repeat.
+func (s Store) Drop(id string) error {
+	if _, ok := decodeSource(id); !ok {
+		return fmt.Errorf("backup: invalid id %q", id)
+	}
+	if err := os.Remove(filepath.Join(s.Dir, id+ext)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("backup: drop: %w", err)
+	}
+	return nil
 }
 
 // List returns stored snapshots, newest first.

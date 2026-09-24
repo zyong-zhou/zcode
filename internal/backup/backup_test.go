@@ -105,3 +105,51 @@ func TestListMissingDir(t *testing.T) {
 		t.Errorf("List on missing dir = (%v, %v), want nil/nil", list, err)
 	}
 }
+
+func TestSnapshotPrunesToKeep(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "a.txt")
+	s := Store{Dir: filepath.Join(root, "b"), Root: root, Keep: 2}
+
+	for i := 0; i < 4; i++ {
+		if err := os.WriteFile(src, []byte("v"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Snapshot("a.txt", src); err != nil {
+			t.Fatalf("Snapshot %d: %v", i, err)
+		}
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("retained %d snapshots, want 2 (Keep)", len(list))
+	}
+}
+
+func TestDropRemovesSnapshot(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(src, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := Store{Dir: filepath.Join(root, "b"), Root: root}
+	id, err := s.Snapshot("a.txt", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Drop(id); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if list, _ := s.List(); len(list) != 0 {
+		t.Errorf("after Drop List = %d, want 0", len(list))
+	}
+	// Dropping again is a no-op, but a malformed id is rejected.
+	if err := s.Drop(id); err != nil {
+		t.Errorf("second Drop = %v, want nil", err)
+	}
+	if err := s.Drop("noid"); err == nil {
+		t.Error("Drop accepted a malformed id")
+	}
+}

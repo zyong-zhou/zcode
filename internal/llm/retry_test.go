@@ -85,3 +85,22 @@ func TestRetryDoesNotRetryAfterDelta(t *testing.T) {
 		t.Errorf("calls = %d, want 1 (no retry after output)", s.calls)
 	}
 }
+
+// modelClient records SetModel calls so RetryClient's forwarding can be checked.
+type modelClient struct{ model string }
+
+func (m *modelClient) Chat(context.Context, Request) (Response, error) {
+	return Response{}, nil
+}
+
+func (m *modelClient) SetModel(model string) { m.model = model }
+
+func TestRetrySetModelForwards(t *testing.T) {
+	inner := &modelClient{}
+	RetryClient{Inner: inner}.SetModel("next")
+	if inner.model != "next" {
+		t.Errorf("inner model = %q, want next", inner.model)
+	}
+	// A client without ModelSetter is left untouched and must not panic.
+	RetryClient{Inner: &flakyClient{}}.SetModel("ignored")
+}

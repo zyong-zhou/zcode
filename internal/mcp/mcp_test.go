@@ -364,6 +364,32 @@ func TestManagerWithFactory(t *testing.T) {
 	}
 }
 
+func TestManagerServers(t *testing.T) {
+	good := &fakeMCPClient{infos: []ToolInfo{{Name: "a"}, {Name: "b"}}}
+	factory := func(ServerConfig, ClientInfo) (Client, error) { return good, nil }
+	m, errs := startWith(context.Background(),
+		[]ServerConfig{{Name: "one", ReadOnly: true}, {Name: "two"}}, ClientInfo{}, factory)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v", errs)
+	}
+	servers := m.Servers()
+	if len(servers) != 2 {
+		t.Fatalf("servers = %d, want 2", len(servers))
+	}
+	// Servers start concurrently, so compare by name rather than order.
+	byName := map[string]ServerInfo{}
+	for _, s := range servers {
+		byName[s.Name] = s
+	}
+	if got := byName["one"]; got.Tools != 2 || !got.ReadOnly {
+		t.Errorf("server one = %+v", got)
+	}
+	if got := byName["two"]; got.Tools != 2 || got.ReadOnly {
+		t.Errorf("server two = %+v", got)
+	}
+	_ = m.Close()
+}
+
 func TestManagerRefreshOnToolsChanged(t *testing.T) {
 	cl := &fakeMCPClient{infos: []ToolInfo{{Name: "a"}}}
 	factory := func(ServerConfig, ClientInfo) (Client, error) { return cl, nil }

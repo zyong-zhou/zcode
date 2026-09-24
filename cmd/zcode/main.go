@@ -120,7 +120,7 @@ func run() error {
 	// Pre-write snapshots power the /undo command; the directory is gitignored.
 	var backups *backup.Store
 	if cfg.BackupOn() {
-		backups = &backup.Store{Dir: resolvePath(root, cfg.Backup.Dir), Root: root}
+		backups = &backup.Store{Dir: resolvePath(root, cfg.Backup.Dir), Root: root, Keep: cfg.Backup.Keep}
 	}
 	var backupHook func(source, abs string) error
 	if backups != nil {
@@ -216,6 +216,7 @@ func run() error {
 	// MCP servers: register their tools like any other. The manager reports
 	// tool-list changes so the registry stays in step with the server.
 	var mgr *mcp.Manager
+	var mcpStatus func() string
 	if cfg.MCPOn() {
 		if cfgs := mcpConfigs(cfg); len(cfgs) > 0 {
 			m, errs := mcp.Start(context.Background(), cfgs, mcp.ClientInfo{
@@ -245,6 +246,27 @@ func run() error {
 			sync()
 			mgr.SetOnChange(sync)
 			defer func() { _ = mgr.Close() }()
+
+			mcpStatus = func() string {
+				var b strings.Builder
+				servers := mgr.Servers()
+				if len(servers) == 0 {
+					b.WriteString("MCP 已启用，但没有已连接的服务器")
+				} else {
+					b.WriteString("MCP 服务器")
+					for _, s := range servers {
+						ro := ""
+						if s.ReadOnly {
+							ro = "（只读）"
+						}
+						fmt.Fprintf(&b, "\n  %s  %d 个工具%s", s.Name, s.Tools, ro)
+					}
+				}
+				for _, e := range errs {
+					b.WriteString("\n失败：" + e.Error())
+				}
+				return b.String()
+			}
 		}
 	}
 
@@ -347,7 +369,16 @@ func run() error {
 			EstimateTokens: estimateTokens,
 			ContextLimit:   cfg.Context.MaxTokens,
 			Backups:        backups,
-			OnEvent:        sink,
+			SwitchModel: func(name string) (string, error) {
+				name = strings.TrimSpace(name)
+				if name == "" {
+					return "", fmt.Errorf("模型名不能为空")
+				}
+				base.SetModel(name)
+				return base.Model, nil
+			},
+			MCPStatus: mcpStatus,
+			OnEvent:   sink,
 		})
 	}
 

@@ -68,13 +68,10 @@ func (s Store) New() (*Session, error) {
 // Open opens an existing session. It fails when the id does not exist, so a
 // typo never silently starts an empty conversation.
 func (s Store) Open(id string) (*Session, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
 	id = strings.TrimSpace(id)
-	if id == "" {
-		return nil, fmt.Errorf("session: empty id")
-	}
-	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
-		return nil, fmt.Errorf("session: invalid id %q", id)
-	}
 	path := filepath.Join(s.Dir, id+ext)
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("session: %q not found", id)
@@ -84,6 +81,50 @@ func (s Store) Open(id string) (*Session, error) {
 		return nil, fmt.Errorf("session: open: %w", err)
 	}
 	return &Session{id: id, path: path, f: f}, nil
+}
+
+// Delete removes a stored session file.
+func (s Store) Delete(id string) error {
+	if err := validateID(id); err != nil {
+		return err
+	}
+	path := filepath.Join(s.Dir, strings.TrimSpace(id)+ext)
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("session: delete: %w", err)
+	}
+	return nil
+}
+
+// Rename changes a session's id. It fails when the new id already exists.
+func (s Store) Rename(id, newID string) error {
+	if err := validateID(id); err != nil {
+		return err
+	}
+	if err := validateID(newID); err != nil {
+		return err
+	}
+	id, newID = strings.TrimSpace(id), strings.TrimSpace(newID)
+	from := filepath.Join(s.Dir, id+ext)
+	to := filepath.Join(s.Dir, newID+ext)
+	if _, err := os.Stat(to); err == nil {
+		return fmt.Errorf("session: %q already exists", newID)
+	}
+	if err := os.Rename(from, to); err != nil {
+		return fmt.Errorf("session: rename: %w", err)
+	}
+	return nil
+}
+
+// validateID rejects ids that could escape the session directory.
+func validateID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("session: empty id")
+	}
+	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return fmt.Errorf("session: invalid id %q", id)
+	}
+	return nil
 }
 
 func (s Store) create(id string) (*Session, error) {
@@ -304,6 +345,47 @@ func (m *Manager) List() ([]Info, error) { return m.store.List() }
 
 // Latest returns the most recent session id, or "" when none exists.
 func (m *Manager) Latest() (string, error) { return m.store.Latest() }
+
+// Delete removes a stored session. If it is the active session, it is closed
+// and the manager becomes session-less until one is opened or created.
+func (m *Manager) Delete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cur != nil && m.cur.id == id {
+		_ = m.cur.Close()
+		m.cur = nil
+	}
+	return m.store.Delete(id)
+}
+
+// Rename changes a session's id, updating the active session when it matches.
+// The active transcript is closed before the rename and reopened afterwards,
+// because Windows refuses to rename an open file.
+func (m *Manager) Rename(id, newID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	active := m.cur != nil && m.cur.id == id
+	if active {
+		if err := m.cur.Close(); err != nil {
+			return err
+		}
+	}
+	if err := m.store.Rename(id, newID); err != nil {
+		return err
+	}
+	if active {
+		newID = strings.TrimSpace(newID)
+		path := filepath.Join(m.store.Dir, newID+ext)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("session: reopen after rename: %w", err)
+		}
+		m.cur.id = newID
+		m.cur.path = path
+		m.cur.f = f
+	}
+	return nil
+}
 
 // Close closes the active session.
 func (m *Manager) Close() error {

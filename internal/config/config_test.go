@@ -58,6 +58,22 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+func TestBackupKeepDefaults(t *testing.T) {
+	if Default().Backup.Keep != DefaultBackupKeep {
+		t.Errorf("default backup.keep = %d, want %d", Default().Backup.Keep, DefaultBackupKeep)
+	}
+	cfg := Config{Backup: BackupConfig{Keep: 0}}
+	cfg.Normalize()
+	if cfg.Backup.Keep != DefaultBackupKeep {
+		t.Errorf("normalized backup.keep = %d, want %d", cfg.Backup.Keep, DefaultBackupKeep)
+	}
+	cfg = Config{Backup: BackupConfig{Keep: 5}}
+	cfg.Normalize()
+	if cfg.Backup.Keep != 5 {
+		t.Errorf("explicit backup.keep = %d, want 5", cfg.Backup.Keep)
+	}
+}
+
 func TestNormalizeFeatureDefaults(t *testing.T) {
 	cfg := Config{}
 	cfg.Normalize()

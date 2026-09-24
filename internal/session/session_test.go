@@ -184,3 +184,70 @@ func TestSessionDirCreated(t *testing.T) {
 		t.Errorf("session dir not created: %v", err)
 	}
 }
+
+func TestStoreDeleteAndRename(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	s, err := store.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Append(llm.Message{Role: "user", Content: "hi"})
+	id := s.ID()
+	_ = s.Close()
+
+	if err := store.Rename(id, "renamed"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	reopened, err := store.Open("renamed")
+	if err != nil {
+		t.Fatalf("renamed session should open: %v", err)
+	}
+	_ = reopened.Close()
+	if _, err := store.Open(id); err == nil {
+		t.Error("old id should no longer exist")
+	}
+	if err := store.Rename("renamed", "renamed"); err == nil {
+		t.Error("renaming to an existing id should fail")
+	}
+	if err := store.Rename("../x", "y"); err == nil {
+		t.Error("invalid source id should fail")
+	}
+	if err := store.Rename("renamed", "../y"); err == nil {
+		t.Error("invalid target id should fail")
+	}
+	if err := store.Delete("renamed"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := store.Open("renamed"); err == nil {
+		t.Error("deleted session should not open")
+	}
+	if err := store.Delete("../x"); err == nil {
+		t.Error("invalid id delete should fail")
+	}
+}
+
+func TestManagerDeleteAndRenameActive(t *testing.T) {
+	m := NewManager(Store{Dir: t.TempDir()})
+	defer m.Close()
+
+	id, err := m.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Rename(id, "active"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if cur, _, _ := m.Current(); cur != "active" {
+		t.Errorf("Current = %q, want active", cur)
+	}
+	if err := m.Delete("active"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if cur, _, _ := m.Current(); cur != "" {
+		t.Errorf("Current after deleting the active session = %q, want empty", cur)
+	}
+	// Appending to a deleted session's manager is safe (no active session).
+	if err := m.Append(llm.Message{Role: "user", Content: "x"}); err != nil {
+		t.Errorf("Append without an active session = %v, want nil", err)
+	}
+}

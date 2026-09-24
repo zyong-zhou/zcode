@@ -85,6 +85,13 @@ func (c RetryClient) ChatStream(ctx context.Context, req Request, onDelta func(s
 	return Response{}, last
 }
 
+// SetModel forwards a model change to the wrapped client when it supports it.
+func (c RetryClient) SetModel(model string) {
+	if ms, ok := c.Inner.(ModelSetter); ok {
+		ms.SetModel(model)
+	}
+}
+
 // retryable reports whether err is a transient failure worth another attempt.
 // Context cancellation and deadline expiry are never retried.
 func retryable(err error) bool {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,12 +37,13 @@ const helpText = `命令
   /help   显示本帮助
   /reset  清空上下文，重新开始
   /clear  只清屏，保留上下文
-  /model  显示当前模型
+  /model  显示当前模型（/model <名字> 切换）
   /cost   查看本次会话累计 token 用量
   /context 查看上下文大小估算与上限
   /compact 立即压缩上下文
-  /undo   撤销最近一次文件写入（恢复备份）
+  /undo   撤销最近一次文件写入（/undo <序号>）
   /backups 列出最近的写入备份
+  /mcp    查看 MCP 服务器与工具
   /plan   切换到 Plan 模式（只读）
   /build  切换到 Build 模式（可读写、可执行）
   /mode   显示当前模式
@@ -85,6 +87,11 @@ type Options struct {
 	// ContextLimit is the model context budget in tokens used by /context. Zero
 	// means unknown.
 	ContextLimit int
+	// SwitchModel, when set, changes the model at runtime and returns the name
+	// actually applied. It backs /model <name>.
+	SwitchModel func(name string) (string, error)
+	// MCPStatus, when set, returns a short multi-line report for /mcp.
+	MCPStatus func() string
 	// OnEvent, when set, receives every agent event in addition to the UI. It is
 	// used for JSONL tracing.
 	OnEvent func(zcode.Event)
@@ -436,7 +443,11 @@ func (m *model) command(line string) tea.Cmd {
 		m.blocks = nil
 		m.status = ""
 	case "/model":
-		m.blocks = append(m.blocks, block{role: roleSystem, text: "模型：" + m.opts.Model})
+		if len(fields) > 1 {
+			m.switchModel(strings.Join(fields[1:], " "))
+		} else {
+			m.blocks = append(m.blocks, block{role: roleSystem, text: "模型：" + m.opts.Model + "（/model <名字> 切换）"})
+		}
 	case "/cost":
 		u := m.ag.Usage
 		m.blocks = append(m.blocks, block{role: roleSystem, text: fmt.Sprintf("token 用量：prompt %d · completion %d · total %d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)})
@@ -445,7 +456,7 @@ func (m *model) command(line string) tea.Cmd {
 	case "/compact":
 		return m.compactCommand()
 	case "/undo":
-		m.undoCommand()
+		m.undoCommand(fields)
 	case "/backups":
 		m.listBackups()
 	case "/plan":
@@ -470,6 +481,12 @@ func (m *model) command(line string) tea.Cmd {
 		m.listSessions()
 	case "/resume":
 		m.resumeSession(fields)
+	case "/delete":
+		m.deleteSession(fields)
+	case "/rename":
+		m.renameSession(fields)
+	case "/mcp":
+		m.mcpCommand()
 	case "/skills":
 		m.skillsCommand()
 	case "/help":
@@ -527,15 +544,17 @@ func (m *model) compactCommand() tea.Cmd {
 	return tea.Batch(work, m.spinner.Tick)
 }
 
-// undoCommand restores the most recent pre-write snapshot.
-func (m *model) undoCommand() {
+// undoCommand restores a pre-write snapshot and drops it so repeated /undo
+// walks further back. An optional 1-based index (from /backups) picks a
+// specific snapshot.
+func (m *model) undoCommand(fields []string) {
 	if m.opts.Backups == nil {
 		m.blocks = append(m.blocks, block{role: roleSystem, text: "未启用备份（在 config.json 里设置 backup.enabled）"})
 		return
 	}
-	entry, ok, err := m.opts.Backups.Latest()
+	entry, ok, err := m.pickBackup(fields)
 	if err != nil {
-		m.blocks = append(m.blocks, block{role: roleError, text: "读取备份失败：" + err.Error()})
+		m.blocks = append(m.blocks, block{role: roleError, text: "撤销失败：" + err.Error()})
 		return
 	}
 	if !ok {
@@ -546,7 +565,28 @@ func (m *model) undoCommand() {
 		m.blocks = append(m.blocks, block{role: roleError, text: "撤销失败：" + err.Error()})
 		return
 	}
-	m.blocks = append(m.blocks, block{role: roleSystem, text: "已撤销：" + entry.Source})
+	_ = m.opts.Backups.Drop(entry.ID)
+	m.blocks = append(m.blocks, block{role: roleSystem, text: "已撤销：" + entry.Source + "（可继续 /undo 回退更早的改动）"})
+}
+
+// pickBackup returns the snapshot to undo: the newest, or the entry at the
+// 1-based index shown by /backups.
+func (m *model) pickBackup(fields []string) (backup.Entry, bool, error) {
+	if len(fields) < 2 {
+		return m.opts.Backups.Latest()
+	}
+	n, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return backup.Entry{}, false, fmt.Errorf("用法：/undo [序号]")
+	}
+	list, err := m.opts.Backups.List()
+	if err != nil {
+		return backup.Entry{}, false, err
+	}
+	if n < 1 || n > len(list) {
+		return backup.Entry{}, false, fmt.Errorf("序号 %d 超出范围（共 %d 条）", n, len(list))
+	}
+	return list[n-1], true, nil
 }
 
 // listBackups shows recent snapshots, newest first.
@@ -571,10 +611,41 @@ func (m *model) listBackups() {
 			fmt.Fprintf(&b, "\n… 还有 %d 条", len(list)-i)
 			break
 		}
-		fmt.Fprintf(&b, "\n  %s  %s", e.ModTime.Format("01-02 15:04:05"), e.Source)
+		fmt.Fprintf(&b, "\n  %d. %s  %s", i+1, e.ModTime.Format("01-02 15:04:05"), e.Source)
 	}
-	b.WriteString("\n用 /undo 恢复最近一次。")
+	b.WriteString("\n/undo 恢复最近一次 · /undo <序号> 恢复指定备份")
 	m.blocks = append(m.blocks, block{role: roleSystem, text: b.String()})
+}
+
+// switchModel changes the model used for subsequent requests.
+func (m *model) switchModel(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "用法：/model <模型名>"})
+		return
+	}
+	if m.opts.SwitchModel == nil {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "当前模型不支持运行时切换"})
+		return
+	}
+	got, err := m.opts.SwitchModel(name)
+	if err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "切换模型失败：" + err.Error()})
+		return
+	}
+	m.opts.Model = got
+	m.blocks = append(m.blocks, block{role: roleSystem, text: "已切换模型：" + got})
+}
+
+// mcpCommand reports configured MCP servers and their tool counts.
+func (m *model) mcpCommand() {
+	body := "未启用 MCP（在 config.json 里设置 mcp.enabled 与 servers）"
+	if m.opts.MCPStatus != nil {
+		if s := strings.TrimSpace(m.opts.MCPStatus()); s != "" {
+			body = s
+		}
+	}
+	m.blocks = append(m.blocks, block{role: roleSystem, text: body})
 }
 
 // helpBody returns the built-in help plus any user-defined commands.
@@ -680,7 +751,8 @@ func (m *model) newSession() {
 	m.status = "新会话：" + id
 }
 
-// listSessions shows recent sessions, newest first.
+// listSessions shows recent sessions, newest first, numbered for /resume,
+// /delete, and /rename.
 func (m *model) listSessions() {
 	if m.opts.Sessions == nil {
 		m.blocks = append(m.blocks, block{role: roleSystem, text: "会话未启用（在 config.json 里设置 session.enabled）"})
@@ -700,20 +772,82 @@ func (m *model) listSessions() {
 	cur, _, _ := m.opts.Sessions.Current()
 	for i, info := range infos {
 		if i >= 10 {
+			b.WriteString(fmt.Sprintf("\n… 还有 %d 条", len(infos)-i))
 			break
 		}
 		mark := "  "
 		if info.ID == cur {
 			mark = "* "
 		}
-		b.WriteString(fmt.Sprintf("\n%s%s  %d 条  %s",
-			mark, info.ID, info.Messages, info.ModTime.Format("01-02 15:04")))
+		b.WriteString(fmt.Sprintf("\n%s%d. %s  %d 条  %s",
+			mark, i+1, info.ID, info.Messages, info.ModTime.Format("01-02 15:04")))
 		if info.Preview != "" {
 			b.WriteString("  " + info.Preview)
 		}
 	}
-	b.WriteString("\n用 /resume <id> 恢复")
+	b.WriteString("\n/resume <序号|id> · /delete <序号|id> · /rename <序号|id> <新名>")
 	m.blocks = append(m.blocks, block{role: roleSystem, text: b.String()})
+}
+
+// sessionByRef resolves a 1-based list index (as shown by /sessions) or a raw
+// session id to an id.
+func (m *model) sessionByRef(ref string) (string, error) {
+	if n, err := strconv.Atoi(ref); err == nil {
+		infos, err := m.opts.Sessions.List()
+		if err != nil {
+			return "", err
+		}
+		if n < 1 || n > len(infos) {
+			return "", fmt.Errorf("序号 %d 超出范围（共 %d 条）", n, len(infos))
+		}
+		return infos[n-1].ID, nil
+	}
+	return ref, nil
+}
+
+// deleteSession removes a stored session.
+func (m *model) deleteSession(fields []string) {
+	if m.opts.Sessions == nil {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "会话未启用（在 config.json 里设置 session.enabled）"})
+		return
+	}
+	if len(fields) < 2 {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "用法：/delete <序号|id>（用 /sessions 查看）"})
+		return
+	}
+	id, err := m.sessionByRef(fields[1])
+	if err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "删除失败：" + err.Error()})
+		return
+	}
+	if err := m.opts.Sessions.Delete(id); err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "删除会话失败：" + err.Error()})
+		return
+	}
+	m.blocks = append(m.blocks, block{role: roleSystem, text: "已删除会话：" + id})
+}
+
+// renameSession gives a stored session a new id.
+func (m *model) renameSession(fields []string) {
+	if m.opts.Sessions == nil {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "会话未启用（在 config.json 里设置 session.enabled）"})
+		return
+	}
+	if len(fields) < 3 {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "用法：/rename <序号|id> <新名>"})
+		return
+	}
+	id, err := m.sessionByRef(fields[1])
+	if err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "重命名失败：" + err.Error()})
+		return
+	}
+	newID := fields[2]
+	if err := m.opts.Sessions.Rename(id, newID); err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "重命名会话失败：" + err.Error()})
+		return
+	}
+	m.blocks = append(m.blocks, block{role: roleSystem, text: fmt.Sprintf("已重命名会话：%s → %s", id, newID)})
 }
 
 // resumeSession loads a stored session and replays it into the view.
@@ -723,10 +857,15 @@ func (m *model) resumeSession(fields []string) {
 		return
 	}
 	if len(fields) < 2 {
-		m.blocks = append(m.blocks, block{role: roleSystem, text: "用法：/resume <id>（用 /sessions 查看）"})
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "用法：/resume <序号|id>（用 /sessions 查看）"})
 		return
 	}
-	id, err := m.opts.Sessions.Open(fields[1])
+	ref, err := m.sessionByRef(fields[1])
+	if err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "恢复会话失败：" + err.Error()})
+		return
+	}
+	id, err := m.opts.Sessions.Open(ref)
 	if err != nil {
 		m.blocks = append(m.blocks, block{role: roleError, text: "恢复会话失败：" + err.Error()})
 		return

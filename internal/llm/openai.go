@@ -54,6 +54,11 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	}
 }
 
+// SetModel changes the model used for subsequent requests.
+func (c *OpenAIClient) SetModel(model string) {
+	c.Model = strings.TrimSpace(model)
+}
+
 // Chat implements Client.
 func (c *OpenAIClient) Chat(ctx context.Context, req Request) (Response, error) {
 	raw, err := json.Marshal(c.buildBody(req))

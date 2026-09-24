@@ -78,3 +78,9 @@ type Client interface {
 type StreamClient interface {
 	ChatStream(ctx context.Context, req Request, onDelta func(string)) (Response, error)
 }
+
+// ModelSetter is optionally implemented by clients whose model can be changed
+// at runtime. It backs the TUI's /model command.
+type ModelSetter interface {
+	SetModel(model string)
+}

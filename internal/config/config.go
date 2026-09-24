@@ -26,6 +26,9 @@ const (
 	DefaultSessionDir     = ".zcode/sessions"
 	// DefaultBackupDir stores pre-write file snapshots used by /undo.
 	DefaultBackupDir = ".zcode/backups"
+	// DefaultBackupKeep bounds how many snapshots are retained; the oldest are
+	// pruned first.
+	DefaultBackupKeep = 100
 	// DefaultCompactAt is the fraction of the context window at which history is
 	// compacted.
 	DefaultCompactAt = 0.75
@@ -75,10 +78,11 @@ type ContextConfig struct {
 }
 
 // BackupConfig configures pre-write file snapshots. Dir is relative to the
-// project root unless absolute.
+// project root unless absolute. Keep bounds how many snapshots are retained.
 type BackupConfig struct {
 	Enabled *bool  `json:"enabled"`
 	Dir     string `json:"dir"`
+	Keep    int    `json:"keep"`
 }
 
 // PermissionsConfig configures the tool-permission policy. Decisions are
@@ -142,7 +146,7 @@ func Default() Config {
 		Rules:          RulesConfig{Files: []string{DefaultRulesFile}},
 		Session:        SessionConfig{Dir: DefaultSessionDir},
 		Context:        ContextConfig{CompactAt: DefaultCompactAt, KeepRecent: DefaultKeepRecent},
-		Backup:         BackupConfig{Dir: DefaultBackupDir},
+		Backup:         BackupConfig{Dir: DefaultBackupDir, Keep: DefaultBackupKeep},
 		Permissions:    PermissionsConfig{Default: DefaultPermission},
 	}
 }
@@ -223,6 +227,9 @@ func (c *Config) Normalize() {
 	}
 	if strings.TrimSpace(c.Backup.Dir) == "" {
 		c.Backup.Dir = DefaultBackupDir
+	}
+	if c.Backup.Keep <= 0 {
+		c.Backup.Keep = DefaultBackupKeep
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {
 		c.Context.CompactAt = DefaultCompactAt

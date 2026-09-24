@@ -28,7 +28,8 @@
   },
   "backup": {
     "enabled": true,
-    "dir": ".zcode/backups"
+    "dir": ".zcode/backups",
+    "keep": 100
   },
   "permissions": {
     "default": "allow",

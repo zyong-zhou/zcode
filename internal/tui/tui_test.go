@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/zhouyong/zcode/internal/command"
 	"github.com/zhouyong/zcode/internal/llm"
 	"github.com/zhouyong/zcode/internal/memory"
+	"github.com/zhouyong/zcode/internal/session"
 	"github.com/zhouyong/zcode/internal/skill"
 	"github.com/zhouyong/zcode/internal/tools"
 	"github.com/zhouyong/zcode/internal/zcode"
@@ -433,5 +435,177 @@ func TestModelBackupCommands(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(src); string(got) != "v1" {
 		t.Errorf("content after undo = %q, want v1", got)
+	}
+}
+
+func TestModelUndoWalksBackAndIndexes(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(src, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := &backup.Store{Dir: filepath.Join(root, "b"), Root: root}
+	if _, err := st.Snapshot("a.txt", src); err != nil { // holds v1
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Snapshot("a.txt", src); err != nil { // holds v2
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("v3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m := newModel(ag, Options{Root: root, Model: "test-model", Backups: st})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// /undo consumes the newest snapshot (v2) so a second /undo reaches v1.
+	m.command("/undo")
+	if got, _ := os.ReadFile(src); string(got) != "v2" {
+		t.Fatalf("after first undo content = %q, want v2", got)
+	}
+	m.command("/undo")
+	if got, _ := os.ReadFile(src); string(got) != "v1" {
+		t.Fatalf("after second undo content = %q, want v1", got)
+	}
+	// Both snapshots are consumed; a third undo has nothing to do.
+	m.command("/undo")
+	if v := m.View(); !strings.Contains(v, "没有可撤销的备份") {
+		t.Errorf("expected an empty-stack notice:\n%s", v)
+	}
+
+	// An explicit index selects a snapshot without popping the newest first.
+	if err := os.WriteFile(src, []byte("v4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Snapshot("a.txt", src); err != nil { // holds v4 (newest)
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("v5"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Snapshot("a.txt", src); err != nil { // holds v5 (newest)
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("v6"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.command("/undo 2") // second-newest = the v4 snapshot
+	if got, _ := os.ReadFile(src); string(got) != "v4" {
+		t.Errorf("indexed undo content = %q, want v4", got)
+	}
+	m.command("/undo 9")
+	if v := m.View(); !strings.Contains(v, "超出范围") {
+		t.Errorf("out-of-range index should error:\n%s", v)
+	}
+}
+
+func TestModelModelCommand(t *testing.T) {
+	m := newTestModel()
+	m.command("/model")
+	if v := m.View(); !strings.Contains(v, "test-model") {
+		t.Errorf("/model should show the current model:\n%s", v)
+	}
+	m.command("/model other")
+	if v := m.View(); !strings.Contains(v, "不支持运行时切换") {
+		t.Errorf("expected a no-switcher notice:\n%s", v)
+	}
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	var switched string
+	m2 := newModel(ag, Options{
+		Root: ".", Model: "test-model",
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	_, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2.command("/model deepseek")
+	if switched != "deepseek" {
+		t.Errorf("SwitchModel got %q, want deepseek", switched)
+	}
+	if m2.opts.Model != "deepseek" {
+		t.Errorf("opts.Model = %q, want deepseek", m2.opts.Model)
+	}
+	if v := m2.View(); !strings.Contains(v, "已切换模型：deepseek") {
+		t.Errorf("switch confirmation missing:\n%s", v)
+	}
+
+	m2.opts.SwitchModel = func(string) (string, error) { return "", errors.New("boom") }
+	m2.command("/model x")
+	if v := m2.View(); !strings.Contains(v, "切换模型失败：boom") {
+		t.Errorf("switch error not surfaced:\n%s", v)
+	}
+}
+
+func TestModelMCPCommand(t *testing.T) {
+	m := newTestModel()
+	m.command("/mcp")
+	if v := m.View(); !strings.Contains(v, "未启用 MCP") {
+		t.Errorf("/mcp without a status should warn:\n%s", v)
+	}
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m2 := newModel(ag, Options{
+		Root: ".", Model: "test-model",
+		MCPStatus: func() string { return "MCP 服务器\n  demo  2 个工具" },
+	})
+	_, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2.command("/mcp")
+	if v := m2.View(); !strings.Contains(v, "demo") {
+		t.Errorf("/mcp missing server info:\n%s", v)
+	}
+}
+
+func TestModelSessionManagement(t *testing.T) {
+	dir := t.TempDir()
+	mgr := session.NewManager(session.Store{Dir: dir})
+	defer mgr.Close()
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	ag.Transcript = mgr
+	m := newModel(ag, Options{Root: dir, Model: "test-model", Sessions: mgr})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	first, err := mgr.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Append(llm.Message{Role: "user", Content: "第一个"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := mgr.New(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Append(llm.Message{Role: "user", Content: "第二个"}); err != nil {
+		t.Fatal(err)
+	}
+
+	m.command("/sessions")
+	if v := m.View(); !strings.Contains(v, "1.") || !strings.Contains(v, "2.") {
+		t.Errorf("/sessions should number entries:\n%s", v)
+	}
+
+	// Index 1 is the newest session.
+	m.command("/rename 1 renamed")
+	if v := m.View(); !strings.Contains(v, "已重命名会话") {
+		t.Errorf("rename by index failed:\n%s", v)
+	}
+	m.command("/resume 1")
+	if v := m.View(); !strings.Contains(v, "已恢复会话：renamed") {
+		t.Errorf("resume by index failed:\n%s", v)
+	}
+	m.command("/delete " + first)
+	if v := m.View(); !strings.Contains(v, "已删除会话：") {
+		t.Errorf("delete by id failed:\n%s", v)
+	}
+	m.command("/delete 99")
+	if v := m.View(); !strings.Contains(v, "超出范围") {
+		t.Errorf("out-of-range index should error:\n%s", v)
 	}
 }

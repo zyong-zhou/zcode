@@ -27,13 +27,15 @@ go build -o bin\zcode.exe ./cmd/zcode
 TUI 键位与命令：
 
 - `Enter` 发送 · `Ctrl+J` 换行 · `Shift+Tab` 切换 Plan/Build · `PgUp/PgDn` 或滚轮滚动 · `Esc` 取消当前请求 · `Ctrl+C` 退出
-- `/help` 帮助 · `/reset` 清空上下文 · `/clear` 只清屏 · `/model` 查看模型
+- `/help` 帮助 · `/reset` 清空上下文 · `/clear` 只清屏 · `/model` 查看/切换模型（`/model <名字>`）
 - `/cost` 查看累计 token 用量 · `/context` 查看上下文估算与上限 · `/compact` 立即压缩上下文
 - `/plan` · `/build` 切换模式 · `/mode` 查看当前模式
 - `/memory` 查看项目记忆 · `/memory add <文本>` 手动记一条 · `/memory clear` 清空
 - `/rules` 查看已注入的项目规则（`AGENTS.md`）
-- `/session` 查看当前会话 · `/new` 开始新会话 · `/sessions` 列出历史 · `/resume <id>` 恢复会话
-- `/undo` 撤销最近一次文件写入 · `/backups` 列出写入备份
+- `/session` 查看当前会话 · `/new` 开始新会话 · `/sessions` 列出历史（带序号）
+- `/resume <序号|id>` 恢复会话 · `/delete <序号|id>` 删除会话 · `/rename <序号|id> <新名>` 重命名
+- `/undo` 撤销最近一次文件写入（可连按回退更早改动）· `/undo <序号>` 恢复指定备份 · `/backups` 列出写入备份
+- `/mcp` 查看 MCP 服务器与工具数量
 - `/skills` 列出可用技能
 - `/exit` 退出
 - 用户自定义命令：把 `.zcode/commands/<名字>.md` 放好，即可用 `/<名字> <参数>` 触发（详见下文）
@@ -133,7 +135,7 @@ token 数为估算（中文按字、英文约 4 字符 1 token），用于在硬
 
 ## 写入备份与撤销（backup）
 
-`write_file` 与 `edit` 在改动已有文件前，会把旧内容快照到 `.zcode/backups/`（默认开启，`backup.enabled` / `backup.dir` 可调）。TUI 里用 `/backups` 查看最近的快照，用 `/undo` 把最近一次改动恢复回去。新建文件没有旧内容，不会产生快照。备份目录已被 `.gitignore` 忽略，不进仓库。
+`write_file` 与 `edit` 在改动已有文件前，会把旧内容快照到 `.zcode/backups/`（默认开启，`backup.enabled` / `backup.dir` / `backup.keep` 可调）。TUI 里用 `/backups` 查看最近的快照（带序号，最新在前），用 `/undo` 把最近一次改动恢复回去；每次 `/undo` 会消费掉对应快照，连续 `/undo` 可逐步回退更早的改动，`/undo <序号>` 则恢复指定的一条。新建文件没有旧内容，不会产生快照。快照数量由 `backup.keep` 限制（默认 100，超出后删除最旧的）。备份目录已被 `.gitignore` 忽略，不进仓库。
 
 ## 自定义命令与技能
 
@@ -180,7 +182,7 @@ zcode 可作为 MCP 客户端，通过 stdio 连接用户配置的外部 MCP ser
 | `rules.enabled` / `rules.files` | `true` / `["AGENTS.md"]` | 项目规则注入 |
 | `session.enabled` / `session.dir` | `true` / `.zcode/sessions` | 会话持久化 |
 | `context.max_tokens` / `context.compact_at` / `context.keep_recent` | `0` / `0.75` / `6` | 上下文压缩（`max_tokens=0` 关闭） |
-| `backup.enabled` / `backup.dir` | `true` / `.zcode/backups` | 写入前快照与 `/undo` |
+| `backup.enabled` / `backup.dir` / `backup.keep` | `true` / `.zcode/backups` / `100` | 写入前快照与 `/undo` |
 | `permissions.default` / `permissions.tools` / `permissions.commands` | `allow` / `{}` / `{}` | 工具权限 |
 | `mcp.enabled` / `mcp.servers` | `false` / `[]` | MCP |
 

@@ -151,6 +151,24 @@ func (m *Manager) Tools() []tools.Tool {
 	return out
 }
 
+// ServerInfo summarises one connected server for status display.
+type ServerInfo struct {
+	Name     string
+	Tools    int
+	ReadOnly bool
+}
+
+// Servers returns a snapshot of the connected servers, in start order.
+func (m *Manager) Servers() []ServerInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ServerInfo, 0, len(m.servers))
+	for _, s := range m.servers {
+		out = append(out, ServerInfo{Name: s.cfg.Name, Tools: len(s.tools), ReadOnly: s.cfg.ReadOnly})
+	}
+	return out
+}
+
 // Close shuts every server down and returns the first error.
 func (m *Manager) Close() error {
 	m.mu.Lock()

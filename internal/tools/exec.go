@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -41,6 +42,22 @@ func (t RunCommand) Parameters() map[string]any {
 		},
 		"required": []string{"command"},
 	}
+}
+
+// Preview summarises the command line for an approval prompt.
+func (t RunCommand) Preview(args string) (string, bool) {
+	var in struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(args), &in); err != nil || strings.TrimSpace(in.Command) == "" {
+		return "", false
+	}
+	line := in.Command
+	if len(in.Args) > 0 {
+		line += " " + strings.Join(in.Args, " ")
+	}
+	return "执行 " + oneLine(line, previewMaxWidth), true
 }
 
 func (t RunCommand) Run(ctx context.Context, args string) (string, error) {
