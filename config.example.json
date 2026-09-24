@@ -26,6 +26,10 @@
     "compact_at": 0.75,
     "keep_recent": 6
   },
+  "backup": {
+    "enabled": true,
+    "dir": ".zcode/backups"
+  },
   "permissions": {
     "default": "allow",
     "tools": {},

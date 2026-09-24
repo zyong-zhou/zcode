@@ -2,12 +2,15 @@ package tui
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/zhouyong/zcode/internal/backup"
 	"github.com/zhouyong/zcode/internal/command"
 	"github.com/zhouyong/zcode/internal/llm"
 	"github.com/zhouyong/zcode/internal/memory"
@@ -64,8 +67,13 @@ func TestModelSlashHelp(t *testing.T) {
 	m := newTestModel()
 	m.input.SetValue("/help")
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if v := m.View(); !strings.Contains(v, "/reset") {
-		t.Errorf("help output missing command list:\n%s", v)
+	// Inspect the help block directly: the viewport scrolls to its tail, so the
+	// top of a long help body is not visible.
+	body := m.blocks[len(m.blocks)-1].text
+	for _, want := range []string{"/reset", "/cost", "/context", "/compact", "/exit"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("help output missing %q:\n%s", want, body)
+		}
 	}
 }
 
@@ -305,5 +313,125 @@ func TestModelTogglesMode(t *testing.T) {
 	}
 	if got := len(strings.Split(m.View(), "\n")); got != 24 {
 		t.Errorf("view lines = %d, want 24", got)
+	}
+}
+
+func TestModelPermissionPreviewShown(t *testing.T) {
+	m := newTestModel()
+	m.permReq = &zcode.PermissionRequest{
+		Tool:    "write_file",
+		Args:    "{}",
+		Preview: "写入 a.txt（5 字节）:\nhello",
+	}
+	m.permReply = make(chan bool, 1)
+	if v := m.View(); !strings.Contains(v, "write_file") || !strings.Contains(v, "hello") {
+		t.Errorf("permission preview not rendered:\n%s", v)
+	}
+}
+
+func TestModelCostCommand(t *testing.T) {
+	m := newTestModel()
+	m.ag.Usage = llm.Usage{PromptTokens: 12, CompletionTokens: 3, TotalTokens: 15}
+	m.command("/cost")
+	if v := m.View(); !strings.Contains(v, "prompt 12") || !strings.Contains(v, "total 15") {
+		t.Errorf("/cost missing usage:\n%s", v)
+	}
+}
+
+func TestModelContextCommand(t *testing.T) {
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m := newModel(ag, Options{
+		Root:           ".",
+		Model:          "test-model",
+		EstimateTokens: func([]llm.Message) int { return 100 },
+		ContextLimit:   1000,
+	})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.command("/context")
+	if v := m.View(); !strings.Contains(v, "100 tokens") || !strings.Contains(v, "1000") {
+		t.Errorf("/context missing estimate:\n%s", v)
+	}
+}
+
+func TestModelCompactCommand(t *testing.T) {
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m := newModel(ag, Options{Root: ".", Model: "test-model"})
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m.command("/compact")
+	if v := m.View(); !strings.Contains(v, "未启用上下文压缩") {
+		t.Errorf("/compact without a compactor should warn:\n%s", v)
+	}
+
+	ag.Compactor = fakeCompactor{changed: true}
+	cmd := m.command("/compact")
+	if cmd == nil || !m.busy {
+		t.Fatalf("compact did not start: cmd=%v busy=%v", cmd, m.busy)
+	}
+	_, _ = m.Update(compactMsg{changed: true})
+	if v := m.View(); !strings.Contains(v, "已压缩上下文") {
+		t.Errorf("compact result missing:\n%s", v)
+	}
+}
+
+// fakeCompactor reports a fixed changed flag.
+type fakeCompactor struct{ changed bool }
+
+func (f fakeCompactor) Compact(_ context.Context, msgs []llm.Message) ([]llm.Message, bool, error) {
+	return msgs, f.changed, nil
+}
+
+func TestModelTurnElapsedShown(t *testing.T) {
+	m := newTestModel()
+	m.input.SetValue("需求")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.turnStart.IsZero() {
+		t.Fatal("turnStart not set on submit")
+	}
+	_, _ = m.Update(doneMsg{answer: "答"})
+	if !m.turnStart.IsZero() {
+		t.Error("turnStart not cleared after finish")
+	}
+
+	m.lastCost = 1500 * time.Millisecond
+	if v := m.View(); !strings.Contains(v, "1.5s") {
+		t.Errorf("status line missing the duration:\n%s", v)
+	}
+}
+
+func TestModelBackupCommands(t *testing.T) {
+	m := newTestModel()
+	m.command("/undo")
+	if v := m.View(); !strings.Contains(v, "未启用备份") {
+		t.Errorf("/undo without a store should warn:\n%s", v)
+	}
+
+	root := t.TempDir()
+	src := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(src, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := &backup.Store{Dir: filepath.Join(root, "b"), Root: root}
+	if _, err := st.Snapshot("a.txt", src); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := zcode.New(fakeClient{reply: "ok"}, tools.NewRegistry(), zcode.Options{System: "sys"})
+	m2 := newModel(ag, Options{Root: root, Model: "test-model", Backups: st})
+	_, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m2.command("/backups")
+	if v := m2.View(); !strings.Contains(v, "a.txt") {
+		t.Errorf("/backups missing the source:\n%s", v)
+	}
+	m2.command("/undo")
+	if v := m2.View(); !strings.Contains(v, "已撤销：a.txt") {
+		t.Errorf("/undo did not confirm:\n%s", v)
+	}
+	if got, _ := os.ReadFile(src); string(got) != "v1" {
+		t.Errorf("content after undo = %q, want v1", got)
 	}
 }

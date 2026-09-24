@@ -49,3 +49,35 @@ jobs:
       - name: Build
         shell: pwsh
         run: go build -o bin/zcode.exe ./cmd/zcode
+
+  # Optional race detector job. windows-latest ships a MinGW gcc, so cgo is
+  # usually available; continue-on-error keeps a missing toolchain from blocking
+  # the main test job.
+  race:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Configure Go proxy
+        shell: pwsh
+        run: go env -w GOPROXY=https://goproxy.cn,direct
+
+      - name: Set up MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+
+      - name: Race test
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+          $env:CGO_ENABLED = "1"
+          go test -race ./... -count=1

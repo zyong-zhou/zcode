@@ -10,7 +10,13 @@ import (
 
 // Edit replaces exact text in an existing file. Unlike WriteFile it does not
 // overwrite the whole file, so targeted changes are safer and easier to review.
-type Edit struct{ Root string }
+type Edit struct {
+	Root string
+	// Backup, when set, snapshots the file before modifying it so the change can
+	// be undone. It receives the project-relative source path and the absolute
+	// path.
+	Backup func(source, abs string) error
+}
 
 func (t Edit) Name() string { return "edit" }
 
@@ -42,6 +48,26 @@ func (t Edit) Parameters() map[string]any {
 		},
 		"required": []string{"path", "edits"},
 	}
+}
+
+// Preview summarises the edits for an approval prompt.
+func (t Edit) Preview(args string) (string, bool) {
+	var in struct {
+		Path  string `json:"path"`
+		Edits []struct {
+			Old string `json:"old"`
+			New string `json:"new"`
+		} `json:"edits"`
+	}
+	if err := json.Unmarshal([]byte(args), &in); err != nil || strings.TrimSpace(in.Path) == "" || len(in.Edits) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "编辑 %s（%d 处）:", in.Path, len(in.Edits))
+	for _, e := range in.Edits {
+		fmt.Fprintf(&b, "\n- %s\n+ %s", oneLine(e.Old, previewMaxWidth), oneLine(e.New, previewMaxWidth))
+	}
+	return b.String(), true
 }
 
 func (t Edit) Run(_ context.Context, args string) (string, error) {
@@ -86,6 +112,12 @@ func (t Edit) Run(_ context.Context, args string) (string, error) {
 			content = strings.ReplaceAll(content, e.Old, e.New)
 		default:
 			content = strings.Replace(content, e.Old, e.New, 1)
+		}
+	}
+
+	if t.Backup != nil {
+		if err := t.Backup(in.Path, path); err != nil {
+			return "", fmt.Errorf("edit: %w", err)
 		}
 	}
 

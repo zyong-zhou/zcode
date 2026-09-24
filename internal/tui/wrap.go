@@ -31,6 +31,28 @@ func truncateWidth(s string, max int) string {
 	return b.String() + "…"
 }
 
+// truncateLines cuts s to at most maxLines lines and width columns per line,
+// appending a marker when lines were dropped.
+func truncateLines(s string, maxLines, width int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	shown := lines
+	if len(lines) > maxLines {
+		shown = lines[:maxLines]
+	}
+	out := make([]string, 0, len(shown))
+	for _, ln := range shown {
+		out = append(out, truncateWidth(ln, width))
+	}
+	res := strings.Join(out, "\n")
+	if len(lines) > maxLines {
+		res += "\n…"
+	}
+	return res
+}
+
 // wrapText soft-wraps s to width display columns. Explicit newlines are kept,
 // and lines break at a space when one is available (falling back to a hard
 // break). Widths are measured with rune widths so CJK text lines up in the

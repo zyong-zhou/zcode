@@ -13,6 +13,7 @@ zcode 是 Go 实现的「程序设计 Agent」：CLI 驱动一个 LLM，让它�
 - `internal/rules/`：项目规则（默认 `AGENTS.md`）加载，注入系统提示词；缺失文件跳过。
 - `internal/session/`：会话持久化。JSONL 逐条消息落盘；`Manager` 实现 `zcode.Transcript` 并保证换会话时线程安全。
 - `internal/compact/`：上下文压缩（先裁剪旧工具结果，再让模型摘要早期对话），实现 `zcode.Compactor`。
+- `internal/backup/`：写入前的文件快照（`.zcode/backups`），供 TUI 的 `/undo` 恢复。
 - `internal/permission/`：工具权限策略（allow/ask/deny，含 `run_command` 命令前缀白/黑名单）。
 - `internal/command/`：自定义斜杠命令（`.zcode/commands/*.md`，支持 `$ARGUMENTS`/`$1`）。
 - `internal/skill/`：按需加载的技能（`.zcode/skills/*.md`），经 `tools.SkillTool` 暴露。
@@ -26,7 +27,7 @@ zcode 是 Go 实现的「程序设计 Agent」：CLI 驱动一个 LLM，让它�
 - 拉取依赖：默认 `proxy.golang.org` 常不可达，需 `GOPROXY=https://goproxy.cn,direct`。新增第三方依赖后提交 `go.mod`/`go.sum`。
 - 运行（打包版）：`.\bin\zcode.exe -request "设计一个..." [-out design.md] [-mode plan|build] [-v] [-trace trace.jsonl] [-dir path] [-config path]`
 - 运行（开发版）：`go run ./cmd/zcode -request "设计一个..." [-out design.md] [-v]`
-- 交互式 TUI：`.\bin\zcode.exe`（不传 `-request` 且 stdin 是终端时自动进入）或 `-i`/`-tui`。快捷键 `Enter` 发送、`Ctrl+J` 换行、`Shift+Tab` 切换 Plan/Build、`Esc` 取消、`Ctrl+C` 退出；命令 `/help`、`/reset`、`/clear`、`/model`、`/plan`、`/build`、`/mode`、`/memory`、`/exit`。`-out`/`-v` 在 TUI 被忽略（用 `-trace` 记录步骤）。
+- 交互式 TUI：`.\bin\zcode.exe`（不传 `-request` 且 stdin 是终端时自动进入）或 `-i`/`-tui`。快捷键 `Enter` 发送、`Ctrl+J` 换行、`Shift+Tab` 切换 Plan/Build、`Esc` 取消、`Ctrl+C` 退出；命令 `/help`、`/reset`、`/clear`、`/model`、`/cost`、`/context`、`/compact`、`/plan`、`/build`、`/mode`、`/memory`、`/rules`、`/session`、`/new`、`/sessions`、`/resume`、`/undo`、`/backups`、`/skills`、`/exit`。`-out`/`-v` 在 TUI 被忽略（用 `-trace` 记录步骤）。
 - 模式默认：交互式 `build`；一次性（传了 `-request`）且未显式 `-mode` 时默认 `plan`。
 - 版本：`cmd/zcode` 的 `var version`，构建用 `-ldflags "-X main.version=..."` 覆盖；`-version` 打印。
 - 工具默认作用于 **exe 所在目录**（`-dir` 为空时取 `os.Executable()` 的父目录，方便双击 `bin\zcode.exe`；`go run` 的临时构建目录会被识别并回退到当前工作目录）；要指向别处传 `-dir path`。
@@ -38,7 +39,7 @@ zcode 是 Go 实现的「程序设计 Agent」：CLI 驱动一个 LLM，让它�
 
 ## 配置与优先级
 - 优先级（低到高）：内置默认 → `config.json` → `LLM_*` 环境变量 → 命令行 flag。
-- `config.json` 字段：`base_url`、`api_key`、`model`、`max_steps`、`timeout_seconds`、`mode`、`modes.{plan,build}.system`、`memory.{enabled,path}`、`rules.{enabled,files[]}`、`session.{enabled,dir}`、`context.{max_tokens,compact_at,keep_recent}`、`permissions.{default,tools{},commands{allow[],deny[]}}`、`mcp.{enabled,servers[]}`；缺省字段保留默认值（默认 `https://api.openai.com/v1`、`gpt-4o-mini`、`max_steps=12`、`timeout_seconds=300`、`mode=build`、`memory.enabled=true`、`memory.path=.zcode/memory.md`、`rules.enabled=true`、`rules.files=["AGENTS.md"]`、`session.enabled=true`、`session.dir=.zcode/sessions`、`context.max_tokens=0`（关闭压缩）、`context.compact_at=0.75`、`context.keep_recent=6`、`permissions.default=allow`、`mcp.enabled=false`）。
+- `config.json` 字段：`base_url`、`api_key`、`model`、`max_steps`、`timeout_seconds`、`mode`、`modes.{plan,build}.system`、`memory.{enabled,path}`、`rules.{enabled,files[]}`、`session.{enabled,dir}`、`context.{max_tokens,compact_at,keep_recent}`、`backup.{enabled,dir}`、`permissions.{default,tools{},commands{allow[],deny[]}}`、`mcp.{enabled,servers[]}`；缺省字段保留默认值（默认 `https://api.openai.com/v1`、`gpt-4o-mini`、`max_steps=12`、`timeout_seconds=300`、`mode=build`、`memory.enabled=true`、`memory.path=.zcode/memory.md`、`rules.enabled=true`、`rules.files=["AGENTS.md"]`、`session.enabled=true`、`session.dir=.zcode/sessions`、`context.max_tokens=0`（关闭压缩）、`context.compact_at=0.75`、`context.keep_recent=6`、`backup.enabled=true`、`backup.dir=.zcode/backups`、`permissions.default=allow`、`mcp.enabled=false`）。
 - `config.json` 含密钥，已被 `.gitignore` 忽略；模板见 `config.example.json`，不要提交真实密钥。
 - `-config` 未指定时的查找顺序：**可执行文件同目录**的 `config.json` → 当前目录的 `config.json` → 内置默认。打包版因此可自包含（`bin\config.json`），开发版 `go run` 会回退到仓库根目录。
 - **显式**传入 `-config` 指向不存在的文件会报错（避免拼错路径静默用默认值）。
@@ -52,6 +53,7 @@ zcode 是 Go 实现的「程序设计 Agent」：CLI 驱动一个 LLM，让它�
 - `ZCODE_MEMORY`：`0`/`false` 关闭项目记忆，其它值开启。
 - `ZCODE_RULES`：`0`/`false` 关闭项目规则注入，其它值开启。
 - `ZCODE_SESSION`：`0`/`false` 关闭会话持久化，其它值开启。
+- `ZCODE_BACKUP`：`0`/`false` 关闭写入前快照，其它值开启。
 - `ZCODE_MCP`：`1`/`true` 开启 MCP，其它值关闭。
 
 ## 约定与坑
@@ -77,7 +79,10 @@ zcode 是 Go 实现的「程序设计 Agent」：CLI 驱动一个 LLM，让它�
 - 可插拔能力统一走 `zcode.Options` 的接口字段并在 `New` 透传：`Rules`/`Memory`（共用 `MemoryProvider`，只暴露 `Render()`）、`Permissions`（`PermissionFunc`）+`OnPermission`、`Transcript`、`Compactor`。都可为 nil；`zcode.Agent` 上同名字段是唯一状态源。
 - 权限：`Agent.checkPermission` 在重复调用守卫之后、真正执行工具之前判定；`ask` 无 `OnPermission` 时按 `deny`（非交互安全）。`EventPermission`/`EventWarning`/`EventCompact` 是新增事件，`observe.Text` 与 TUI 的 `handleEvent` 都要处理。
 - 会话：消息落盘统一经 `Agent.appendMessage`（同时更新 `history` 与 `Transcript`），不要在循环里直接 `append(msgs, ...)`。`Agent.Reset` 也会清空会话；`Agent.Restore` 只载入历史，系统提示词每轮由 `refreshSystem` 重建。Windows 上 `O_APPEND` 句柄不能 `Truncate`，`session.Reset` 用「关闭 + `O_TRUNC` 重开」实现。
-- 压缩：`Agent.run` 每步请求前调用 `Compactor`，仅当返回 `changed=true` 才替换历史；摘要失败只发 `EventWarning`，仍用裁剪后的历史继续。
+- 压缩：`Agent.run` 每步请求前调用 `Compactor`，仅当返回 `changed=true` 才替换历史；摘要失败只发 `EventWarning`，仍用裁剪后的历史继续。`Agent.Compact(ctx)` 供 TUI `/compact` 手动触发；`Agent.History()` 返回历史副本供 `/context` 估算（`tui.Options.EstimateTokens` 注入 `compact.EstimateTokens`，避免 tui 直接依赖 compact）。
+- 备份：`internal/backup.Store` 用「时间戳-base64url(相对路径)」命名快照；`tools.WriteFile`/`tools.Edit` 的 `Backup func(source,abs) error` 钩子在写前调用，钩子报错会阻止写入。路径恢复再经 `backup.resolve` 限制在根内。`tui.Options.Backups` 支撑 `/undo`、`/backups`。
+- 权限预览：可选接口 `tools.Previewer`（`Preview(args)(string,bool)`），`tools.Preview(t,args)` 取；`WriteFile`/`Edit` 已实现，`zcode.checkPermission` 填充 `PermissionRequest.Preview`，TUI `permissionView` 展示（限行宽）。新增写类工具应实现它。
+- `run_command` 失败时在错误里附工具引导（`internal/tools/exec.go` 的 `commandHint`），提醒模型改用内置文件工具，避免反复试 shell 命令撞 `max_steps`。
 - 自定义命令与技能的路径固定为项目根下 `.zcode/commands`、`.zcode/skills`（不可配置）。技能仅在非空时注册 `skill` 工具；自定义命令由 TUI 展开（模型不可见）。
 - `cmd/zcode.run` 开头会重置 `flag.CommandLine`，因此可在测试里多次调用；`TestRunOneShot` 用 `httptest` 假 LLM 跑通 配置→Agent→工具→`-out` 全链路。
 - 编辑工具 `edit`（`internal/tools/edit.go`）与 `write_file` 不同：定点替换，`old` 必须唯一匹配（除非 `replace_all`），路径同样经 `resolveUnder`，非 plan-safe。

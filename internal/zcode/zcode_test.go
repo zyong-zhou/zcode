@@ -364,6 +364,79 @@ func TestAgentPermissionGate(t *testing.T) {
 	}
 }
 
+// previewTool implements the optional tools.Previewer interface.
+type previewTool struct{ ran *int }
+
+func (previewTool) Name() string               { return "preview_tool" }
+func (previewTool) Description() string        { return "preview" }
+func (previewTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
+func (p previewTool) Run(context.Context, string) (string, error) {
+	*p.ran++
+	return "ok", nil
+}
+func (previewTool) Preview(args string) (string, bool) { return "PREVIEW:" + args, true }
+
+func TestAgentPermissionRequestCarriesPreview(t *testing.T) {
+	var got zcode.PermissionRequest
+	a := zcode.New(&fakeClient{responses: []llm.Response{
+		{ToolCalls: []llm.ToolCall{{ID: "1", Name: "preview_tool", Arguments: `{"x":1}`}}},
+		{Content: "done"},
+	}}, tools.NewRegistry(previewTool{ran: new(int)}), zcode.Options{
+		System:       "s",
+		Permissions:  func(string, string) string { return "ask" },
+		OnPermission: func(req zcode.PermissionRequest) bool { got = req; return true },
+	})
+	if _, err := a.Design(context.Background(), "x"); err != nil {
+		t.Fatalf("Design: %v", err)
+	}
+	if got.Preview != `PREVIEW:{"x":1}` {
+		t.Errorf("preview = %q, want the tool preview", got.Preview)
+	}
+}
+
+// fakeCompactor replaces the history with its first message when changed.
+type fakeCompactor struct{ changed bool }
+
+func (f fakeCompactor) Compact(_ context.Context, msgs []llm.Message) ([]llm.Message, bool, error) {
+	if !f.changed {
+		return msgs, false, nil
+	}
+	if len(msgs) == 0 {
+		return msgs, false, nil
+	}
+	return msgs[:1], true, nil
+}
+
+func TestAgentHistoryIsCopyAndCompact(t *testing.T) {
+	ctx := context.Background()
+	a := zcode.New(&fakeClient{responses: []llm.Response{{Content: "hi"}}}, tools.NewRegistry(), zcode.Options{System: "s"})
+	if _, err := a.Ask(ctx, "q"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	h := a.History()
+	if len(h) == 0 {
+		t.Fatal("history is empty after Ask")
+	}
+	h[0] = llm.Message{Role: "user", Content: "mutated"}
+	if a.History()[0].Content == "mutated" {
+		t.Error("History returned a view, not a copy")
+	}
+
+	a.Compactor = fakeCompactor{changed: false}
+	if changed, err := a.Compact(ctx); err != nil || changed {
+		t.Errorf("Compact(no change) = %v, %v; want false, nil", changed, err)
+	}
+	before := len(a.History())
+	a.Compactor = fakeCompactor{changed: true}
+	changed, err := a.Compact(ctx)
+	if err != nil || !changed {
+		t.Fatalf("Compact = %v, %v; want true, nil", changed, err)
+	}
+	if after := len(a.History()); after >= before || after != 1 {
+		t.Errorf("history after compact = %d messages, want 1 (< %d)", after, before)
+	}
+}
+
 // memTranscript is an in-memory Transcript for tests.
 type memTranscript struct{ msgs []llm.Message }
 

@@ -28,12 +28,14 @@ TUI 键位与命令：
 
 - `Enter` 发送 · `Ctrl+J` 换行 · `Shift+Tab` 切换 Plan/Build · `PgUp/PgDn` 或滚轮滚动 · `Esc` 取消当前请求 · `Ctrl+C` 退出
 - `/help` 帮助 · `/reset` 清空上下文 · `/clear` 只清屏 · `/model` 查看模型
+- `/cost` 查看累计 token 用量 · `/context` 查看上下文估算与上限 · `/compact` 立即压缩上下文
 - `/plan` · `/build` 切换模式 · `/mode` 查看当前模式
 - `/memory` 查看项目记忆 · `/memory add <文本>` 手动记一条 · `/memory clear` 清空
 - `/rules` 查看已注入的项目规则（`AGENTS.md`）
 - `/session` 查看当前会话 · `/new` 开始新会话 · `/sessions` 列出历史 · `/resume <id>` 恢复会话
+- `/undo` 撤销最近一次文件写入 · `/backups` 列出写入备份
 - `/skills` 列出可用技能
-- `/help` 帮助 · `/exit` 退出
+- `/exit` 退出
 - 用户自定义命令：把 `.zcode/commands/<名字>.md` 放好，即可用 `/<名字> <参数>` 触发（详见下文）
 
 一次性执行：
@@ -129,6 +131,10 @@ TUI 键位与命令：
 
 token 数为估算（中文按字、英文约 4 字符 1 token），用于在硬上限前触发压缩，不用于计费。
 
+## 写入备份与撤销（backup）
+
+`write_file` 与 `edit` 在改动已有文件前，会把旧内容快照到 `.zcode/backups/`（默认开启，`backup.enabled` / `backup.dir` 可调）。TUI 里用 `/backups` 查看最近的快照，用 `/undo` 把最近一次改动恢复回去。新建文件没有旧内容，不会产生快照。备份目录已被 `.gitignore` 忽略，不进仓库。
+
 ## 自定义命令与技能
 
 - **自定义命令**：`.zcode/commands/<名字>.md`。开头可选 `---` front matter（含 `description:`），正文为提示词模板，支持 `$ARGUMENTS`、`{{args}}` 和 `$1`…`$9` 占位符；没有占位符时参数追加到末尾。TUI 输入 `/<名字> <参数>` 即展开并发送，`/help` 会列出所有自定义命令。
@@ -174,12 +180,13 @@ zcode 可作为 MCP 客户端，通过 stdio 连接用户配置的外部 MCP ser
 | `rules.enabled` / `rules.files` | `true` / `["AGENTS.md"]` | 项目规则注入 |
 | `session.enabled` / `session.dir` | `true` / `.zcode/sessions` | 会话持久化 |
 | `context.max_tokens` / `context.compact_at` / `context.keep_recent` | `0` / `0.75` / `6` | 上下文压缩（`max_tokens=0` 关闭） |
+| `backup.enabled` / `backup.dir` | `true` / `.zcode/backups` | 写入前快照与 `/undo` |
 | `permissions.default` / `permissions.tools` / `permissions.commands` | `allow` / `{}` / `{}` | 工具权限 |
 | `mcp.enabled` / `mcp.servers` | `false` / `[]` | MCP |
 
 模板见 `config.example.json`。
 
-环境变量：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`（连接）；`ZCODE_MODE`、`ZCODE_MEMORY`、`ZCODE_RULES`、`ZCODE_SESSION`（`0`/`false` 关闭）、`ZCODE_MCP`（`1`/`true` 开启）。
+环境变量：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`（连接）；`ZCODE_MODE`、`ZCODE_MEMORY`、`ZCODE_RULES`、`ZCODE_SESSION`、`ZCODE_BACKUP`（`0`/`false` 关闭）、`ZCODE_MCP`（`1`/`true` 开启）。
 
 `config.json` 已被 `.gitignore` 忽略，不要提交真实密钥。`.zcode/memory.md` **有意不忽略**：它是项目知识，应该随仓库共享。
 
@@ -206,6 +213,7 @@ ReAct 循环另有几道保险：整轮超时、相同 `(工具, 参数)` 重复
 - `internal/rules/` — 项目规则（`AGENTS.md`）加载与注入
 - `internal/session/` — 会话持久化（JSONL）
 - `internal/compact/` — 上下文压缩（裁剪 + 摘要）
+- `internal/backup/` — 写入前的文件快照与恢复
 - `internal/permission/` — 工具权限策略
 - `internal/command/` — 自定义斜杠命令
 - `internal/skill/` — 按需加载的技能
@@ -213,7 +221,7 @@ ReAct 循环另有几道保险：整轮超时、相同 `(工具, 参数)` 重复
 
 ## 持续集成与发布
 
-- `.github/workflows/ci.yml`：在 `windows-latest` 上跑 `gofmt` 检查、`go vet`、`go test ./...` 与 `go build`；已设置 `GOPROXY=https://goproxy.cn,direct` 以绕过镜像可达性问题。
+- `.github/workflows/ci.yml`：在 `windows-latest` 上跑 `gofmt` 检查、`go vet`、`go test ./...` 与 `go build`；已设置 `GOPROXY=https://goproxy.cn,direct` 以绕过镜像可达性问题。另有一个**非阻塞**的 `-race` 任务（用 msys2 装 MinGW gcc），失败不影响主任务。
 - `.github/workflows/release.yml`：推送 `v*` 标签时构建带版本号的 `zcode.exe`，打包为 `zcode-windows-amd64.zip`（含 `config.example.json`、`README.md`）并生成 SHA256 校验和，作为 GitHub Release 资产发布。
 
 开发约定见 `AGENTS.md`。

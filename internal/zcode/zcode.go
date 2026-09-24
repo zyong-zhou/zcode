@@ -78,6 +78,9 @@ type MemoryProvider interface {
 type PermissionRequest struct {
 	Tool string
 	Args string
+	// Preview is a short human-readable summary of what the call will do, when
+	// the tool can describe it (for example a file write). It may be empty.
+	Preview string
 }
 
 // PermissionFunc returns the policy decision for a tool call: "allow", "ask",
@@ -253,6 +256,28 @@ func (a *Agent) Restore() error {
 	return nil
 }
 
+// History returns a copy of the current conversation so a caller can inspect or
+// estimate its size without mutating the agent.
+func (a *Agent) History() []llm.Message {
+	out := make([]llm.Message, len(a.history))
+	copy(out, a.history)
+	return out
+}
+
+// Compact runs the configured Compactor once against the current history and
+// replaces it when anything changed. It reports whether the history shrank. It
+// is a no-op when no Compactor is configured.
+func (a *Agent) Compact(ctx context.Context) (bool, error) {
+	if a.Compactor == nil || len(a.history) == 0 {
+		return false, nil
+	}
+	next, changed, err := a.Compactor.Compact(ctx, a.history)
+	if changed {
+		a.history = next
+	}
+	return changed, err
+}
+
 // appendMessage adds one message to history and mirrors it to the transcript.
 func (a *Agent) appendMessage(msgs []llm.Message, m llm.Message) []llm.Message {
 	msgs = append(msgs, m)
@@ -347,7 +372,7 @@ func (a *Agent) checkPermission(call llm.ToolCall) (string, bool) {
 	case "deny":
 		return "deny", false
 	case "ask":
-		if a.OnPermission != nil && a.OnPermission(PermissionRequest{Tool: call.Name, Args: call.Arguments}) {
+		if a.OnPermission != nil && a.OnPermission(PermissionRequest{Tool: call.Name, Args: call.Arguments, Preview: a.previewFor(call)}) {
 			return "ask", true
 		}
 		return "ask", false
@@ -355,6 +380,18 @@ func (a *Agent) checkPermission(call llm.ToolCall) (string, bool) {
 		// Unknown decisions are denied rather than silently allowed.
 		return decision, false
 	}
+}
+
+// previewFor returns the tool's own description of a pending call, or "".
+func (a *Agent) previewFor(call llm.ToolCall) string {
+	if a.Tools == nil {
+		return ""
+	}
+	t, ok := a.Tools.Get(call.Name)
+	if !ok {
+		return ""
+	}
+	return tools.Preview(t, call.Arguments)
 }
 
 // run executes the reasoning loop over msgs, keeping a.history in sync so

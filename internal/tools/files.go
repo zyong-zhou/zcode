@@ -77,7 +77,13 @@ func (t ReadFile) Run(_ context.Context, args string) (string, error) {
 }
 
 // WriteFile writes a UTF-8 text file under Root, creating parent directories.
-type WriteFile struct{ Root string }
+type WriteFile struct {
+	Root string
+	// Backup, when set, snapshots the previous contents before writing so the
+	// change can be undone. It receives the project-relative source path and the
+	// absolute path. A new file (no previous contents) is left to the tool.
+	Backup func(source, abs string) error
+}
 
 func (t WriteFile) Name() string { return "write_file" }
 
@@ -99,6 +105,18 @@ func (t WriteFile) Parameters() map[string]any {
 	}
 }
 
+// Preview summarises the write for an approval prompt.
+func (t WriteFile) Preview(args string) (string, bool) {
+	var in struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(args), &in); err != nil || strings.TrimSpace(in.Path) == "" {
+		return "", false
+	}
+	return fmt.Sprintf("写入 %s（%d 字节）:\n%s", in.Path, len(in.Content), firstLines(in.Content, previewMaxLines, previewMaxWidth)), true
+}
+
 func (t WriteFile) Run(_ context.Context, args string) (string, error) {
 	var in struct {
 		Path    string `json:"path"`
@@ -113,6 +131,11 @@ func (t WriteFile) Run(_ context.Context, args string) (string, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
+	}
+	if t.Backup != nil {
+		if err := t.Backup(in.Path, abs); err != nil {
+			return "", fmt.Errorf("write_file: %w", err)
+		}
 	}
 	if err := os.WriteFile(abs, []byte(in.Content), 0o644); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)

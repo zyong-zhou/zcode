@@ -24,6 +24,8 @@ const (
 	DefaultMemoryPath     = ".zcode/memory.md"
 	DefaultRulesFile      = "AGENTS.md"
 	DefaultSessionDir     = ".zcode/sessions"
+	// DefaultBackupDir stores pre-write file snapshots used by /undo.
+	DefaultBackupDir = ".zcode/backups"
 	// DefaultCompactAt is the fraction of the context window at which history is
 	// compacted.
 	DefaultCompactAt = 0.75
@@ -47,6 +49,7 @@ type Config struct {
 	Rules          RulesConfig       `json:"rules"`
 	Session        SessionConfig     `json:"session"`
 	Context        ContextConfig     `json:"context"`
+	Backup         BackupConfig      `json:"backup"`
 	Permissions    PermissionsConfig `json:"permissions"`
 	MCP            MCPConfig         `json:"mcp"`
 }
@@ -69,6 +72,13 @@ type ContextConfig struct {
 	MaxTokens  int     `json:"max_tokens"`
 	CompactAt  float64 `json:"compact_at"`
 	KeepRecent int     `json:"keep_recent"`
+}
+
+// BackupConfig configures pre-write file snapshots. Dir is relative to the
+// project root unless absolute.
+type BackupConfig struct {
+	Enabled *bool  `json:"enabled"`
+	Dir     string `json:"dir"`
 }
 
 // PermissionsConfig configures the tool-permission policy. Decisions are
@@ -132,6 +142,7 @@ func Default() Config {
 		Rules:          RulesConfig{Files: []string{DefaultRulesFile}},
 		Session:        SessionConfig{Dir: DefaultSessionDir},
 		Context:        ContextConfig{CompactAt: DefaultCompactAt, KeepRecent: DefaultKeepRecent},
+		Backup:         BackupConfig{Dir: DefaultBackupDir},
 		Permissions:    PermissionsConfig{Default: DefaultPermission},
 	}
 }
@@ -176,6 +187,9 @@ func (c *Config) ApplyEnv() {
 	if v, ok := os.LookupEnv("ZCODE_SESSION"); ok {
 		c.Session.Enabled = boolPtr(parseBool(v))
 	}
+	if v, ok := os.LookupEnv("ZCODE_BACKUP"); ok {
+		c.Backup.Enabled = boolPtr(parseBool(v))
+	}
 }
 
 // Normalize trims a trailing slash from BaseURL, restores defaults for empty
@@ -207,6 +221,9 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Session.Dir) == "" {
 		c.Session.Dir = DefaultSessionDir
 	}
+	if strings.TrimSpace(c.Backup.Dir) == "" {
+		c.Backup.Dir = DefaultBackupDir
+	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {
 		c.Context.CompactAt = DefaultCompactAt
 	}
@@ -235,6 +252,9 @@ func (c Config) RulesOn() bool { return boolValue(c.Rules.Enabled, true) }
 
 // SessionOn reports whether conversation persistence is enabled (default true).
 func (c Config) SessionOn() bool { return boolValue(c.Session.Enabled, true) }
+
+// BackupOn reports whether pre-write snapshots are enabled (default true).
+func (c Config) BackupOn() bool { return boolValue(c.Backup.Enabled, true) }
 
 // MCPOn reports whether MCP is enabled (default false).
 func (c Config) MCPOn() bool { return boolValue(c.MCP.Enabled, false) }

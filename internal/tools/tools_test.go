@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,26 @@ func TestRunCommand(t *testing.T) {
 	}
 	if !strings.Contains(out, "go version") {
 		t.Errorf("output = %q, want it to contain %q", out, "go version")
+	}
+}
+
+func TestRunCommandMissingBinaryHintsTools(t *testing.T) {
+	_, err := (RunCommand{Dir: t.TempDir()}).Run(context.Background(), `{"command":"zcode_no_such_command_xyz"}`)
+	if err == nil {
+		t.Fatal("expected an error for a missing executable")
+	}
+	if !strings.Contains(err.Error(), "read_file") {
+		t.Errorf("error = %q, want a hint pointing at built-in tools", err)
+	}
+}
+
+func TestRunCommandFailureHintsNoShell(t *testing.T) {
+	_, err := (RunCommand{Dir: t.TempDir()}).Run(context.Background(), `{"command":"go","args":["definitely-not-a-command"]}`)
+	if err == nil {
+		t.Fatal("expected an error for a failing command")
+	}
+	if !strings.Contains(err.Error(), "不经过 shell") {
+		t.Errorf("error = %q, want a no-shell hint", err)
 	}
 }
 
@@ -223,4 +244,50 @@ func names(ts []Tool) []string {
 		out[i] = t.Name()
 	}
 	return out
+}
+
+func TestWriteFileBackupHook(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a.txt"), "old")
+	var gotSource, gotAbs string
+	w := WriteFile{Root: dir, Backup: func(source, abs string) error {
+		gotSource, gotAbs = source, abs
+		return nil
+	}}
+	if _, err := w.Run(context.Background(), `{"path":"a.txt","content":"new"}`); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if gotSource != "a.txt" || !strings.HasSuffix(gotAbs, "a.txt") {
+		t.Errorf("backup hook got (%q, %q)", gotSource, gotAbs)
+	}
+}
+
+func TestWriteFileBackupErrorBlocksWrite(t *testing.T) {
+	dir := t.TempDir()
+	w := WriteFile{Root: dir, Backup: func(string, string) error { return errors.New("boom") }}
+	if _, err := w.Run(context.Background(), `{"path":"a.txt","content":"new"}`); err == nil {
+		t.Fatal("expected the backup error to block the write")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("file was written despite the backup failure")
+	}
+}
+
+func TestEditBackupHook(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a.go"), "package a\n")
+	called := false
+	e := Edit{Root: dir, Backup: func(source, abs string) error {
+		called = true
+		if source != "a.go" {
+			t.Errorf("source = %q, want a.go", source)
+		}
+		return nil
+	}}
+	if _, err := e.Run(context.Background(), `{"path":"a.go","edits":[{"old":"package a","new":"package b"}]}`); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !called {
+		t.Error("edit did not call the backup hook")
+	}
 }

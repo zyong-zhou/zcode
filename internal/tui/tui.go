@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -14,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/zhouyong/zcode/internal/backup"
 	"github.com/zhouyong/zcode/internal/command"
 	"github.com/zhouyong/zcode/internal/llm"
 	"github.com/zhouyong/zcode/internal/memory"
@@ -35,6 +37,11 @@ const helpText = `命令
   /reset  清空上下文，重新开始
   /clear  只清屏，保留上下文
   /model  显示当前模型
+  /cost   查看本次会话累计 token 用量
+  /context 查看上下文大小估算与上限
+  /compact 立即压缩上下文
+  /undo   撤销最近一次文件写入（恢复备份）
+  /backups 列出最近的写入备份
   /plan   切换到 Plan 模式（只读）
   /build  切换到 Build 模式（可读写、可执行）
   /mode   显示当前模式
@@ -70,6 +77,14 @@ type Options struct {
 	// MCPToolCount, when set, reports how many tools come from MCP servers. It is
 	// called on each render so the count stays accurate as servers change.
 	MCPToolCount func() int
+	// Backups, when set, backs /undo and /backups. It may be nil.
+	Backups *backup.Store
+	// EstimateTokens, when set, approximates the token count of a message slice.
+	// It backs /context. It may be nil.
+	EstimateTokens func([]llm.Message) int
+	// ContextLimit is the model context budget in tokens used by /context. Zero
+	// means unknown.
+	ContextLimit int
 	// OnEvent, when set, receives every agent event in addition to the UI. It is
 	// used for JSONL tracing.
 	OnEvent func(zcode.Event)
@@ -125,10 +140,14 @@ type block struct {
 
 // Messages exchanged between the running agent goroutine and the UI loop.
 type (
-	deltaMsg string
-	eventMsg zcode.Event
-	permMsg  struct{}
-	doneMsg  struct {
+	deltaMsg   string
+	eventMsg   zcode.Event
+	permMsg    struct{}
+	compactMsg struct {
+		changed bool
+		err     error
+	}
+	doneMsg struct {
 		answer string
 		err    error
 	}
@@ -154,6 +173,11 @@ type model struct {
 	status   string
 	turns    int
 	usage    llm.Usage
+
+	// turnStart and lastCost measure how long the most recent request took; the
+	// duration is shown in the status line once it finishes.
+	turnStart time.Time
+	lastCost  time.Duration
 
 	// Pending tool-approval prompt. permReq is set by the agent goroutine in
 	// Run's OnPermission before it sends permMsg, so the channel happens-before
@@ -222,6 +246,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case permMsg:
 		m.layout()
 		return m, nil
+	case compactMsg:
+		m.finishCompact(msg)
+		return m, nil
 	case doneMsg:
 		m.finish(msg)
 		return m, nil
@@ -287,6 +314,7 @@ func (m *model) start(text string) {
 	m.stream.Reset()
 	m.busy = true
 	m.turns++
+	m.turnStart = time.Now()
 	m.lastTool = ""
 	m.status = ""
 	m.layout()
@@ -319,6 +347,25 @@ func (m *model) finish(d doneMsg) {
 		m.status = ""
 	}
 	m.usage = m.ag.Usage
+	if !m.turnStart.IsZero() {
+		m.lastCost = time.Since(m.turnStart)
+		m.turnStart = time.Time{}
+	}
+	m.layout()
+}
+
+// finishCompact reports the outcome of a manual /compact run.
+func (m *model) finishCompact(msg compactMsg) {
+	m.busy = false
+	switch {
+	case msg.err != nil:
+		m.blocks = append(m.blocks, block{role: roleError, text: "压缩失败：" + msg.err.Error()})
+	case msg.changed:
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "已压缩上下文。"})
+	default:
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "上下文未超过阈值，无需压缩。"})
+	}
+	m.status = ""
 	m.layout()
 }
 
@@ -390,6 +437,17 @@ func (m *model) command(line string) tea.Cmd {
 		m.status = ""
 	case "/model":
 		m.blocks = append(m.blocks, block{role: roleSystem, text: "模型：" + m.opts.Model})
+	case "/cost":
+		u := m.ag.Usage
+		m.blocks = append(m.blocks, block{role: roleSystem, text: fmt.Sprintf("token 用量：prompt %d · completion %d · total %d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)})
+	case "/context":
+		m.contextCommand()
+	case "/compact":
+		return m.compactCommand()
+	case "/undo":
+		m.undoCommand()
+	case "/backups":
+		m.listBackups()
 	case "/plan":
 		m.ag.SetMode(zcode.ModePlan)
 	case "/build":
@@ -428,6 +486,95 @@ func (m *model) command(line string) tea.Cmd {
 	}
 	m.layout()
 	return nil
+}
+
+// contextCommand reports the estimated context size and its budget.
+func (m *model) contextCommand() {
+	msgs := m.ag.History()
+	var b strings.Builder
+	if m.opts.EstimateTokens != nil {
+		n := m.opts.EstimateTokens(msgs)
+		fmt.Fprintf(&b, "上下文估算：约 %d tokens", n)
+		if m.opts.ContextLimit > 0 {
+			fmt.Fprintf(&b, " / %d（%.0f%%）", m.opts.ContextLimit, 100*float64(n)/float64(m.opts.ContextLimit))
+		}
+	} else {
+		b.WriteString("未启用上下文估算（在 config.json 里设置 context.max_tokens）")
+	}
+	fmt.Fprintf(&b, "\n消息数：%d", len(msgs))
+	m.blocks = append(m.blocks, block{role: roleSystem, text: b.String()})
+}
+
+// compactCommand runs the compactor once against the current history. It is a
+// no-op with a notice when compaction is not configured.
+func (m *model) compactCommand() tea.Cmd {
+	if m.busy {
+		return nil
+	}
+	if m.ag.Compactor == nil {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "未启用上下文压缩（在 config.json 里设置 context.max_tokens）"})
+		m.layout()
+		return nil
+	}
+	m.busy = true
+	m.status = "正在压缩上下文…"
+	m.layout()
+	ag := m.ag
+	work := func() tea.Msg {
+		changed, err := ag.Compact(context.Background())
+		return compactMsg{changed: changed, err: err}
+	}
+	return tea.Batch(work, m.spinner.Tick)
+}
+
+// undoCommand restores the most recent pre-write snapshot.
+func (m *model) undoCommand() {
+	if m.opts.Backups == nil {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "未启用备份（在 config.json 里设置 backup.enabled）"})
+		return
+	}
+	entry, ok, err := m.opts.Backups.Latest()
+	if err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "读取备份失败：" + err.Error()})
+		return
+	}
+	if !ok {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "没有可撤销的备份。"})
+		return
+	}
+	if _, err := m.opts.Backups.Restore(entry.ID); err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "撤销失败：" + err.Error()})
+		return
+	}
+	m.blocks = append(m.blocks, block{role: roleSystem, text: "已撤销：" + entry.Source})
+}
+
+// listBackups shows recent snapshots, newest first.
+func (m *model) listBackups() {
+	if m.opts.Backups == nil {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "未启用备份（在 config.json 里设置 backup.enabled）"})
+		return
+	}
+	list, err := m.opts.Backups.List()
+	if err != nil {
+		m.blocks = append(m.blocks, block{role: roleError, text: "读取备份失败：" + err.Error()})
+		return
+	}
+	if len(list) == 0 {
+		m.blocks = append(m.blocks, block{role: roleSystem, text: "暂无备份。"})
+		return
+	}
+	var b strings.Builder
+	b.WriteString("备份（新→旧）")
+	for i, e := range list {
+		if i >= 10 {
+			fmt.Fprintf(&b, "\n… 还有 %d 条", len(list)-i)
+			break
+		}
+		fmt.Fprintf(&b, "\n  %s  %s", e.ModTime.Format("01-02 15:04:05"), e.Source)
+	}
+	b.WriteString("\n用 /undo 恢复最近一次。")
+	m.blocks = append(m.blocks, block{role: roleSystem, text: b.String()})
 }
 
 // helpBody returns the built-in help plus any user-defined commands.
@@ -760,9 +907,26 @@ func (m *model) View() string {
 	return b.String()
 }
 
-// permissionView renders the pending tool-approval prompt.
+// formatDuration renders a request duration compactly for the status line.
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// permissionView renders the pending tool-approval prompt, including the tool's
+// own preview of what the call will do when it provides one.
 func (m *model) permissionView() string {
-	return "允许 " + m.permReq.Tool + " 执行此操作？ [y] 允许 · [n] 拒绝"
+	head := "允许 " + m.permReq.Tool + " 执行此操作？ [y] 允许 · [n] 拒绝"
+	if p := strings.TrimSpace(m.permReq.Preview); p != "" {
+		width := m.width - 4
+		if width < 20 {
+			width = 20
+		}
+		head += "\n" + truncateLines(p, 14, width)
+	}
+	return head
 }
 
 // statusView renders the bottom line: key hints (or the transient status), then
@@ -770,6 +934,9 @@ func (m *model) permissionView() string {
 // counters right-aligned. The hint is truncated first so the line never wraps.
 func (m *model) statusView() string {
 	right := fmt.Sprintf("tokens %d↑ %d↓  ", m.usage.PromptTokens, m.usage.CompletionTokens)
+	if m.lastCost > 0 {
+		right = formatDuration(m.lastCost) + "  " + right
+	}
 	rightW := lipgloss.Width(right)
 
 	badge := m.styles.modePlan.Render("PLAN")

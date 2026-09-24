@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zhouyong/zcode/internal/backup"
 	"github.com/zhouyong/zcode/internal/command"
 	"github.com/zhouyong/zcode/internal/compact"
 	"github.com/zhouyong/zcode/internal/config"
@@ -27,25 +28,30 @@ import (
 )
 
 const buildPrompt = `你是 zcode 的 Build 模式，负责把用户的程序设计需求落地。
+运行环境：Windows。命令不经过 shell，按「可执行文件名 + 参数数组」直接调用，不要用管道、重定向或 shell 内置命令。
 工作方式：
 1. 先用工具调研现有代码库（list_dir 看结构、search 搜代码、read_file 读文件），不要凭空假设。
-2. 需要时直接修改代码（write_file）或执行命令（run_command）。
-3. 改动要小、贴合现有风格；完成后运行相关检查（如 gofmt、go vet、go test）并汇报改了什么、结果如何。
-4. 与项目相关的长期事实（约定、决策、坑）用 remember 记录。
+2. 读写文件一律用内置工具：read_file 读、write_file 写、edit 定点改；不要用 cat、type、ls、dir、findstr、Get-Content 等命令代替。
+3. run_command 只用于构建、测试与运行程序（如 go build ./...、go vet ./...、go test ./...），不要用它读写文件。
+4. 需要时直接修改代码（write_file/edit）或执行命令（run_command）。
+5. 改动要小、贴合现有风格；完成后运行相关检查并汇报改了什么、结果如何。
+6. 与项目相关的长期事实（约定、决策、坑）用 remember 记录。
 只输出与任务相关的内容，不要寒暄。`
 
 const planPrompt = `你是 zcode 的 Plan 模式，负责调研并给出可执行的方案，不做任何改动。
+运行环境：Windows。命令不经过 shell，按「可执行文件名 + 参数数组」直接调用。
 工作方式：
 1. 只用只读工具调研（list_dir、search、read_file、recall），不要假设。
-2. 不要修改文件、不要执行命令（这些工具在 Plan 模式不可用）。
-3. 输出结构化方案，包含：需求理解、现状、改动点（精确到文件与函数）、步骤清单、风险、验证方式。
-4. 项目相关的长期事实用 remember 记录。
+2. 读写文件一律用内置工具：read_file 读、list_dir 列目录、search 检索；不要用 cat、type、ls、dir、findstr、Get-Content 等命令代替。
+3. 不要修改文件、不要执行命令（这些工具在 Plan 模式不可用）。
+4. 输出结构化方案，包含：需求理解、现状、改动点（精确到文件与函数）、步骤清单、风险、验证方式。
+5. 项目相关的长期事实用 remember 记录。
 只输出方案，不要实施改动。`
 
 // version is the release version. It is overridden at build time with:
 //
 //	go build -ldflags "-X main.version=1.2.3" ./cmd/zcode
-var version = "0.4.0"
+var version = "0.5.0"
 
 // defaultRepeatLimit bounds identical tool calls per run.
 const defaultRepeatLimit = 3
@@ -111,12 +117,25 @@ func run() error {
 		mode = zcode.ModePlan
 	}
 
+	// Pre-write snapshots power the /undo command; the directory is gitignored.
+	var backups *backup.Store
+	if cfg.BackupOn() {
+		backups = &backup.Store{Dir: resolvePath(root, cfg.Backup.Dir), Root: root}
+	}
+	var backupHook func(source, abs string) error
+	if backups != nil {
+		backupHook = func(source, abs string) error {
+			_, err := backups.Snapshot(source, abs)
+			return err
+		}
+	}
+
 	reg := tools.NewRegistry(
 		tools.ListDir{Root: root},
 		tools.ReadFile{Root: root},
 		tools.Search{Root: root},
-		tools.WriteFile{Root: root},
-		tools.Edit{Root: root},
+		tools.WriteFile{Root: root, Backup: backupHook},
+		tools.Edit{Root: root, Backup: backupHook},
 		tools.RunCommand{Dir: root},
 	)
 
@@ -242,6 +261,12 @@ func run() error {
 			KeepRecent: cfg.Context.KeepRecent,
 		}, newSummarizer(client))
 	}
+	// estimateTokens backs the TUI's /context command; it is only meaningful
+	// when a context budget is configured.
+	var estimateTokens func([]llm.Message) int
+	if cfg.Context.MaxTokens > 0 {
+		estimateTokens = compact.EstimateTokens
+	}
 
 	var mem zcode.MemoryProvider
 	if store != nil {
@@ -319,7 +344,10 @@ func run() error {
 				}
 				return len(mgr.Tools())
 			},
-			OnEvent: sink,
+			EstimateTokens: estimateTokens,
+			ContextLimit:   cfg.Context.MaxTokens,
+			Backups:        backups,
+			OnEvent:        sink,
 		})
 	}
 

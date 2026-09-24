@@ -33,6 +33,24 @@ func IsPlanSafe(t Tool) bool {
 	return false
 }
 
+// Previewer is an optional interface implemented by tools that can describe a
+// call before it runs, so an approval prompt can show what will change. It
+// returns ("", false) when there is nothing useful to show.
+type Previewer interface {
+	Preview(args string) (string, bool)
+}
+
+// Preview returns a human-readable summary of a pending call, or "" when the
+// tool has no preview or its arguments cannot be parsed.
+func Preview(t Tool, args string) string {
+	if p, ok := t.(Previewer); ok {
+		if s, ok := p.Preview(args); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // Registry is a name-indexed, order-stable set of tools.
 type Registry struct {
 	tools map[string]Tool

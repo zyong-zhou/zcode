@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"time"
@@ -71,7 +72,17 @@ func (t RunCommand) Run(ctx context.Context, args string) (string, error) {
 		return result, fmt.Errorf("run_command: timed out after %s", timeout)
 	}
 	if err != nil {
-		return result, fmt.Errorf("run_command: %w", err)
+		return result, fmt.Errorf("run_command: %w%s", err, commandHint(in.Command, err))
 	}
 	return result, nil
+}
+
+// commandHint returns a short guidance suffix appended to a failed run_command
+// result, steering the model back to the built-in tools when it reaches for a
+// shell command that cannot work here (no shell, file commands not installed).
+func commandHint(command string, err error) string {
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Sprintf("。提示：%q 不可用；读写文件用 read_file/write_file/edit，列目录用 list_dir，检索用 search", command)
+	}
+	return "。提示：run_command 不经过 shell；若这是文件读写操作，请改用 read_file/write_file/edit/list_dir/search"
 }

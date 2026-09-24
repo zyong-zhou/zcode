@@ -93,8 +93,20 @@ func TestNormalizeNewSections(t *testing.T) {
 	if cfg.Context.CompactAt != DefaultCompactAt || cfg.Context.KeepRecent != DefaultKeepRecent {
 		t.Errorf("context = %+v", cfg.Context)
 	}
+	if !cfg.BackupOn() || cfg.Backup.Dir != DefaultBackupDir {
+		t.Errorf("backup = %+v", cfg.Backup)
+	}
 	if cfg.Permissions.Default != DefaultPermission {
 		t.Errorf("permissions = %+v", cfg.Permissions)
+	}
+}
+
+func TestBackupEnvSwitch(t *testing.T) {
+	t.Setenv("ZCODE_BACKUP", "0")
+	cfg := Config{}
+	cfg.ApplyEnv()
+	if cfg.BackupOn() {
+		t.Error("ZCODE_BACKUP=0 should disable backups")
 	}
 }
 
