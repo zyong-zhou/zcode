@@ -51,7 +51,7 @@ const planPrompt = `你是 zcode 的 Plan 模式，负责调研并给出可执�
 // version is the release version. It is overridden at build time with:
 //
 //	go build -ldflags "-X main.version=1.2.3" ./cmd/zcode
-var version = "0.5.0"
+var version = "0.5.1"
 
 // defaultRepeatLimit bounds identical tool calls per run.
 const defaultRepeatLimit = 3

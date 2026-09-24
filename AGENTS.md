@@ -27,7 +27,7 @@ zcode 是 Go 实现的「程序设计 Agent」：CLI 驱动一个 LLM，让它�
 - 拉取依赖：默认 `proxy.golang.org` 常不可达，需 `GOPROXY=https://goproxy.cn,direct`。新增第三方依赖后提交 `go.mod`/`go.sum`。
 - 运行（打包版）：`.\bin\zcode.exe -request "设计一个..." [-out design.md] [-mode plan|build] [-v] [-trace trace.jsonl] [-dir path] [-config path]`
 - 运行（开发版）：`go run ./cmd/zcode -request "设计一个..." [-out design.md] [-v]`
-- 交互式 TUI：`.\bin\zcode.exe`（不传 `-request` 且 stdin 是终端时自动进入）或 `-i`/`-tui`。快捷键 `Enter` 发送、`Ctrl+J` 换行、`Shift+Tab` 切换 Plan/Build、`Esc` 取消、`Ctrl+C` 退出；粘贴多行会收缩为一行摘要（`首行 .... 末行（共 N 行）`），内容完整保留、`Enter` 仍发送全文，再次编辑即展开；命令 `/help`、`/reset`、`/clear`、`/model`、`/cost`、`/context`、`/compact`、`/plan`、`/build`、`/mode`、`/memory`、`/rules`、`/session`、`/new`、`/sessions`、`/resume`、`/delete`、`/rename`、`/undo`、`/backups`、`/mcp`、`/skills`、`/exit`。`-out`/`-v` 在 TUI 被忽略（用 `-trace` 记录步骤）。
+- 交互式 TUI：`.\bin\zcode.exe`（不传 `-request` 且 stdin 是终端时自动进入）或 `-i`/`-tui`。快捷键 `Enter` 发送、`Ctrl+J` 换行、`Shift+Tab` 切换 Plan/Build、`Esc` 取消、`Ctrl+C` 退出；粘贴多行会收缩为一行摘要（`首行 .... 末行（共 N 行）`），内容完整保留、`Enter` 仍发送全文，按方向键/退格/`Ctrl+J` 展开；命令 `/help`、`/reset`、`/clear`、`/model`、`/cost`、`/context`、`/compact`、`/plan`、`/build`、`/mode`、`/memory`、`/rules`、`/session`、`/new`、`/sessions`、`/resume`、`/delete`、`/rename`、`/undo`、`/backups`、`/mcp`、`/skills`、`/exit`。`-out`/`-v` 在 TUI 被忽略（用 `-trace` 记录步骤）。
 - 模式默认：交互式 `build`；一次性（传了 `-request`）且未显式 `-mode` 时默认 `plan`。
 - 版本：`cmd/zcode` 的 `var version`，构建用 `-ldflags "-X main.version=..."` 覆盖；`-version` 打印。
 - 工具默认作用于 **exe 所在目录**（`-dir` 为空时取 `os.Executable()` 的父目录，方便双击 `bin\zcode.exe`；`go run` 的临时构建目录会被识别并回退到当前工作目录）；要指向别处传 `-dir path`。
@@ -64,7 +64,7 @@ zcode 是 Go 实现的「程序设计 Agent」：CLI 驱动一个 LLM，让它�
 - 可观测性统一走 `zcode.Agent.OnEvent`（事件类型见 `zcode.EventKind`）；新增输出应写 `internal/observe` 风格的消费者，不要在 agent 循环里直接打印。token 用量由 `llm.Response.Usage` 汇总到 `Agent.Usage`。
 - 多轮：`Agent.Design` 是一次性（重置 `history` 与 `Usage`）；`Agent.Ask` 保留 `history` 且 `Usage` 跨轮累加；TUI 走 `Ask`，`/reset` 调 `Agent.Reset`。
 - 流式：`llm.StreamClient`（可选接口）提供 `ChatStream(ctx, req, onDelta)`；`agent` 仅在 `OnDelta != nil` 且 client 实现该接口时走流式，否则回退 `Chat`。`OpenAIClient` 用 `parseSSE` 组装文本、分片 tool_calls 与 usage。新增 client 至少实现 `Client`。
-- TUI：`internal/tui` 通过 `zcode.OnEvent` 显示工具活动、`zcode.OnDelta` 显示流式文本；事件从 agent goroutine 经 `tea.Program.Send` 回到 UI 循环，不要在 agent 循环里直接打印。TUI 测试用构造的 `tea.Msg` 驱动 `model.Update`，不启动真实终端、不发真实请求。多行粘贴靠 `tea.KeyMsg.Paste` 识别，`model.pasteCollapsed` 控制输入框显示 `collapsedPaste(...)` 摘要（`首行 .... 末行（共 N 行）`），全文仍在 textarea，`Enter` 发原文；下一次编辑键（含 `Ctrl+J`）清除该标志以展开。
+- TUI：`internal/tui` 通过 `zcode.OnEvent` 显示工具活动、`zcode.OnDelta` 显示流式文本；事件从 agent goroutine 经 `tea.Program.Send` 回到 UI 循环，不要在 agent 循环里直接打印。TUI 测试用构造的 `tea.Msg` 驱动 `model.Update`，不启动真实终端、不发真实请求。多行粘贴在 Windows 下**不能**靠 `tea.KeyMsg.Paste`（控制台走 `readConInputs`，该标志恒为 false）：粘贴以单 rune 消息成批到达，换行要么是 `KeyRunes('\n')`，要么是紧跟字符的 `KeyEnter`（用 `pasteBurst` 时间窗判定）。`model.pasteCollapsed` 控制输入框显示 `collapsedPaste(...)` 摘要（`首行 .... 末行（共 N 行）`），全文仍在 textarea，`Enter` 发原文；非 rune 键（方向键/退格/`Ctrl+J`/提交）清除该标志以展开，纯 rune 输入保持收缩（视为粘贴尾部）。
 - 新增工具：实现 `tools.Tool`（`Name`/`Description`/`Parameters`/`Run`），在 `cmd/zcode` 的 `tools.NewRegistry(...)` 注册，并补测试。
 - 模式：`zcode.Mode` 为 `plan`/`build`，`Agent.Mode` 是唯一状态源（TUI 直接读写它，`SetMode` 校验）；切换模式**保留 `history`**，只换系统提示词与工具集。
 - Plan/Build 是**能力过滤**而非仅提示词：`tools.PlanSafe`（`PlanSafe() bool`）未实现即视为不安全。过滤在两处同时生效——`zcode.toolSpecs()`（不暴露给模型）与 `zcode.allowed()`（不可执行，报 unknown tool）。内置读工具为 true，`write_file`/`run_command` 为 false，记忆工具为 true。

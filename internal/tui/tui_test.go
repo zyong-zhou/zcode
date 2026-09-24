@@ -865,6 +865,7 @@ func TestPasteText(t *testing.T) {
 func TestModelPasteCollapsesMultiLine(t *testing.T) {
 	m := newTestModel()
 	full := "第一行\n第二行\n第三行\n第四行"
+	// Bracketed paste: one message carrying the whole block.
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(full), Paste: true})
 
 	if !m.pasteCollapsed {
@@ -887,7 +888,8 @@ func TestModelPasteCollapsesMultiLine(t *testing.T) {
 		t.Errorf("collapsed input height = %d, want 1", h)
 	}
 
-	// Enter sends the full multi-line text, not the summary.
+	// A real Enter comes after a pause and sends the full multi-line text.
+	m.lastInputAt = time.Now().Add(-time.Second)
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(m.blocks) == 0 {
 		t.Fatal("Enter should start a request")
@@ -898,20 +900,79 @@ func TestModelPasteCollapsesMultiLine(t *testing.T) {
 	}
 }
 
-func TestModelEditingRevealsCollapsedPaste(t *testing.T) {
+func TestModelWindowsPasteCollapses(t *testing.T) {
+	// The Windows console reader hands over a paste as single-rune messages;
+	// the line break is a plain rune, never KeyMsg.Paste.
+	m := newTestModel()
+	for _, r := range []string{"第一行", "\n", "第二行", "\n", "第三行"} {
+		_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(r)})
+	}
+	if !m.pasteCollapsed {
+		t.Fatal("a Windows-style multi-line paste should collapse the input")
+	}
+	if got := m.input.Value(); got != "第一行\n第二行\n第三行" {
+		t.Errorf("value = %q, want the full three lines", got)
+	}
+	v := m.View()
+	if !strings.Contains(v, "第一行 .... 第三行") {
+		t.Errorf("collapsed summary missing:\n%s", v)
+	}
+	if strings.Contains(v, "第二行") {
+		t.Errorf("collapsed summary should hide the middle line:\n%s", v)
+	}
+}
+
+func TestModelWindowsPastedEnterFolds(t *testing.T) {
+	// Some terminals deliver a pasted line break as Enter right after the
+	// preceding characters; it must fold into the input, not submit.
+	m := newTestModel()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m.lastInputAt = time.Now()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+
+	if len(m.blocks) != 0 {
+		t.Fatalf("a pasted line break must not submit: %+v", m.blocks)
+	}
+	if !m.pasteCollapsed {
+		t.Error("a pasted line break should collapse the input")
+	}
+	if got := m.input.Value(); got != "a\nb" {
+		t.Errorf("value = %q, want a\\nb", got)
+	}
+}
+
+func TestModelNonRuneKeyRevealsCollapsedPaste(t *testing.T) {
 	m := newTestModel()
 	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb\nc"), Paste: true})
 	if !m.pasteCollapsed {
 		t.Fatal("expected a collapsed paste")
 	}
 
-	// A normal keypress is an edit and reveals the full text again.
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	// Navigation is an explicit action and reveals the full text again.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	if m.pasteCollapsed {
-		t.Error("typing should reveal the full text")
+		t.Error("a cursor move should reveal the full text")
 	}
 	if v := m.View(); !strings.Contains(v, "b") {
-		t.Errorf("editing should show the full text:\n%s", v)
+		t.Errorf("moving should show the full text:\n%s", v)
+	}
+}
+
+func TestModelTypingKeepsCollapsedPaste(t *testing.T) {
+	m := newTestModel()
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("第一行\n第二行"), Paste: true})
+	// A rune insert may still be the tail of the paste, so the summary stays
+	// and simply grows to include the typed text.
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("请实现")})
+	if !m.pasteCollapsed {
+		t.Error("typing right after a paste should keep the summary")
+	}
+	if got := m.input.Value(); !strings.Contains(got, "请实现") {
+		t.Errorf("typed text was lost: %q", got)
+	}
+	if v := m.View(); !strings.Contains(v, "请实现") {
+		t.Errorf("the summary should show the typed text:\n%s", v)
 	}
 }
 

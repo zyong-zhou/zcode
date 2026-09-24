@@ -31,6 +31,11 @@ const (
 	inputMinHeight = 3
 	// inputMaxHeight caps how tall the input grows before it scrolls.
 	inputMaxHeight = 8
+	// pasteBurst is the largest gap between two key events that still counts as
+	// one paste. The Windows console hands a paste over as a burst of
+	// single-rune messages and leaves KeyMsg.Paste false, so a pasted line
+	// break is recognized by how quickly it follows the previous rune.
+	pasteBurst = 30 * time.Millisecond
 )
 
 const helpText = `命令
@@ -179,9 +184,16 @@ type model struct {
 	lastTool string
 	status   string
 	// pasteCollapsed hides a multi-line paste behind a one-line summary in the
-	// input box while the full text stays in the textarea. The next edit reveals
-	// the real content again.
+	// input box while the full text stays in the textarea; an explicit non-rune
+	// key (navigation, edit, submit) reveals the real content again.
 	pasteCollapsed bool
+	// The Windows console reader delivers a paste as a burst of single-rune
+	// messages and leaves KeyMsg.Paste false, so key timing is the only signal
+	// that a line break belongs to a paste rather than the user pressing Enter.
+	lastInputAt    time.Time
+	lastInputGap   time.Duration
+	lastKeyWasRune bool
+	prevKeyWasRune bool
 	turns          int
 	usage          llm.Usage
 
@@ -229,6 +241,13 @@ func newModel(ag *zcode.Agent, opts Options) *model {
 func (m *model) Init() tea.Cmd { return nil }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		now := time.Now()
+		m.lastInputGap = now.Sub(m.lastInputAt)
+		m.lastInputAt = now
+		m.prevKeyWasRune = m.lastKeyWasRune
+		m.lastKeyWasRune = k.Type == tea.KeyRunes
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -265,9 +284,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Any other key is an edit or a cursor move: reveal the full text so the
-	// user can see what they are changing.
-	m.pasteCollapsed = false
+	// A rune insert can still be the tail of a paste, so keep the summary
+	// hidden until an explicit non-rune key (a move, edit, or submit) arrives.
+	if k, ok := msg.(tea.KeyMsg); ok && k.Type != tea.KeyRunes {
+		m.pasteCollapsed = false
+	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.layout()
@@ -283,13 +304,20 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		return m.answerPermission(msg), true
 	}
-	// A multi-line paste is hidden behind a one-line summary while the full text
-	// is inserted, so Enter still sends every line.
+	// A pasted block is hidden behind a one-line summary while the full text is
+	// inserted, so Enter still sends every line. Bracketed paste (Unix, or a
+	// terminal that speaks it) sets msg.Paste; the Windows console reader
+	// instead delivers the block as single-rune messages whose line break
+	// arrives as its own rune.
 	if msg.Paste {
 		if text, multi := pasteText(msg.Runes); multi {
-			m.input.InsertString(text)
-			m.pasteCollapsed = true
-			m.layout()
+			m.collapsePaste(text)
+			return nil, true
+		}
+	}
+	if msg.Type == tea.KeyRunes {
+		if text, multi := pasteText(msg.Runes); multi {
+			m.collapsePaste(text)
 			return nil, true
 		}
 	}
@@ -316,6 +344,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		m.toggleMode()
 		return nil, true
 	case tea.KeyEnter:
+		// On some Windows terminals a pasted line break arrives as Enter hot on
+		// the heels of the characters before it; fold it back into the input
+		// instead of submitting half the paste. A real Enter follows a pause,
+		// so it is left to submit as usual.
+		if m.lastInputGap <= pasteBurst && (m.prevKeyWasRune || m.pasteCollapsed) {
+			m.input.InsertString("\n")
+			m.pasteCollapsed = true
+			m.layout()
+			return nil, true
+		}
 		if m.busy {
 			return nil, true
 		}
@@ -1091,6 +1129,14 @@ func pasteText(runes []rune) (string, bool) {
 	s := strings.ReplaceAll(string(runes), "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	return s, strings.Contains(s, "\n")
+}
+
+// collapsePaste inserts a pasted block and switches the input box to its
+// one-line summary; the full text stays in the textarea and is what gets sent.
+func (m *model) collapsePaste(text string) {
+	m.input.InsertString(text)
+	m.pasteCollapsed = true
+	m.layout()
 }
 
 // collapsedPaste summarizes multi-line text as "first .... last（共 N 行）",
