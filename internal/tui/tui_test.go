@@ -850,6 +850,27 @@ func TestCollapsedPaste(t *testing.T) {
 	}
 }
 
+func TestCollapsedPasteSkipsSeparators(t *testing.T) {
+	// A paste framed by decorative rules should preview the real content, not
+	// the separators (a wall of "=" makes the summary useless).
+	framed := "====================\n真正的第一行\n中间内容\n真正的最后一行\n===================="
+	got := collapsedPaste(framed, 80)
+	for _, want := range []string{"真正的第一行", "真正的最后一行", "....", "共 5 行"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("collapsedPaste missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "====") {
+		t.Errorf("separator leaked into the summary: %q", got)
+	}
+
+	// Nothing but blanks and separators: only the line count remains.
+	only := "====\n----\n****\n"
+	if got := collapsedPaste(only, 80); got != "（共 4 行）" {
+		t.Errorf("all-separator paste = %q, want the line count only", got)
+	}
+}
+
 func TestPasteText(t *testing.T) {
 	if _, multi := pasteText([]rune("hello")); multi {
 		t.Error("a single-line paste should not be multi-line")

@@ -1145,22 +1145,28 @@ func (m *model) collapsePaste(text string) {
 }
 
 // collapsedPaste summarizes multi-line text as "first .... last（共 N 行）",
-// keeping the head and tail visible within width display columns.
+// keeping the head and tail visible within width display columns. Blank and
+// decorative lines (rules such as "======" or "------") are skipped when
+// choosing the preview, so a separator cannot crowd out the real content.
 func collapsedPaste(full string, width int) string {
 	lines := strings.Split(strings.ReplaceAll(full, "\r\n", "\n"), "\n")
 	if len(lines) < 2 {
 		return truncateWidth(full, width)
 	}
-	first := strings.TrimSpace(lines[0])
-	last := ""
-	for i := len(lines) - 1; i >= 0; i-- {
-		if t := strings.TrimSpace(lines[i]); t != "" {
-			last = t
-			break
-		}
-	}
 	suffix := fmt.Sprintf("（共 %d 行）", len(lines))
-	if last == "" || last == first {
+	first, okFirst := previewLine(lines, false)
+	last, okLast := previewLine(lines, true)
+	if !okFirst && !okLast {
+		// Nothing but blanks and separators: just report the size.
+		return truncateWidth(suffix, width)
+	}
+	if !okFirst {
+		first = last
+	}
+	if !okLast {
+		last = first
+	}
+	if first == last {
 		return truncateWidth(first+suffix, width)
 	}
 	const sep = " .... "
@@ -1172,6 +1178,37 @@ func collapsedPaste(full string, width int) string {
 	head := truncateWidth(first, budget/2)
 	tail := truncateWidth(last, budget-budget/2)
 	return head + sep + tail + suffix
+}
+
+// previewLine returns the first (fromEnd=false) or last (fromEnd=true) line
+// that carries real content, skipping blanks and decorative separators. It
+// reports false when every line is blank or decorative.
+func previewLine(lines []string, fromEnd bool) (string, bool) {
+	for i := range lines {
+		idx := i
+		if fromEnd {
+			idx = len(lines) - 1 - i
+		}
+		if t := strings.TrimSpace(lines[idx]); t != "" && !isDecorative(t) {
+			return t, true
+		}
+	}
+	return "", false
+}
+
+// isDecorative reports whether a line is only a separator/rule (for example
+// "=====", "-----", "|---|---|"), which makes a poor summary preview.
+func isDecorative(s string) bool {
+	const marks = "=+-_*#~<>|/\\:;,.·•─═━▬▭■□▪▫"
+	if len([]rune(s)) < 3 {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune(marks, r) {
+			return false
+		}
+	}
+	return true
 }
 
 // formatDuration renders a request duration compactly for the status line.
