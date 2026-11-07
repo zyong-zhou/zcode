@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zhouyong/zcode/internal/llm"
-	"github.com/zhouyong/zcode/internal/tools"
+	"github.com/zyong-zhou/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/tools"
 )
 
 func TestPromptPrefersPlanSystem(t *testing.T) {

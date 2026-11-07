@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zhouyong/zcode/internal/memory"
+	"github.com/zyong-zhou/zcode/internal/memory"
 )
 
 // Remember stores a durable project fact. The memory file lives in the project,

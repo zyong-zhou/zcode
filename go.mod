@@ -1,4 +1,4 @@
-module github.com/zhouyong/zcode
+module github.com/zyong-zhou/zcode
 
 go 1.26
 

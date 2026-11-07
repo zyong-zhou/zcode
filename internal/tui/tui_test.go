@@ -12,14 +12,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/zhouyong/zcode/internal/backup"
-	"github.com/zhouyong/zcode/internal/command"
-	"github.com/zhouyong/zcode/internal/llm"
-	"github.com/zhouyong/zcode/internal/memory"
-	"github.com/zhouyong/zcode/internal/session"
-	"github.com/zhouyong/zcode/internal/skill"
-	"github.com/zhouyong/zcode/internal/tools"
-	"github.com/zhouyong/zcode/internal/zcode"
+	"github.com/zyong-zhou/zcode/internal/backup"
+	"github.com/zyong-zhou/zcode/internal/command"
+	"github.com/zyong-zhou/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/memory"
+	"github.com/zyong-zhou/zcode/internal/session"
+	"github.com/zyong-zhou/zcode/internal/skill"
+	"github.com/zyong-zhou/zcode/internal/tools"
+	"github.com/zyong-zhou/zcode/internal/zcode"
 )
 
 type fakeClient struct{ reply string }

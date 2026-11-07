@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zhouyong/zcode/internal/tools"
+	"github.com/zyong-zhou/zcode/internal/tools"
 )
 
 // startTimeout bounds the handshake and tool listing of a single server.

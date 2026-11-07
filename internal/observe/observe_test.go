@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zhouyong/zcode/internal/llm"
-	"github.com/zhouyong/zcode/internal/zcode"
+	"github.com/zyong-zhou/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/zcode"
 )
 
 func TestTextObserver(t *testing.T) {

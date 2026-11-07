@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zhouyong/zcode/internal/llm"
-	"github.com/zhouyong/zcode/internal/tools"
-	"github.com/zhouyong/zcode/internal/zcode"
+	"github.com/zyong-zhou/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/tools"
+	"github.com/zyong-zhou/zcode/internal/zcode"
 )
 
 // fakeClient replays canned responses and counts calls. It must never perform

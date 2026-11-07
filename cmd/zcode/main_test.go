@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zhouyong/zcode/internal/config"
-	"github.com/zhouyong/zcode/internal/llm"
-	"github.com/zhouyong/zcode/internal/session"
-	"github.com/zhouyong/zcode/internal/zcode"
+	"github.com/zyong-zhou/zcode/internal/config"
+	"github.com/zyong-zhou/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/session"
+	"github.com/zyong-zhou/zcode/internal/zcode"
 )
 
 // TestRunOneShot drives the whole program against a fake OpenAI-compatible

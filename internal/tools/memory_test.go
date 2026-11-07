@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zhouyong/zcode/internal/memory"
+	"github.com/zyong-zhou/zcode/internal/memory"
 )
 
 func newMemoryStore(t *testing.T) *memory.Store {

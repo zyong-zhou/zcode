@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zhouyong/zcode/internal/zcode"
+	"github.com/zyong-zhou/zcode/internal/zcode"
 )
 
 // Text returns an observer that writes one line per event to w.

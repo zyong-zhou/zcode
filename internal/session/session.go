@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zhouyong/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/llm"
 )
 
 // ext is the suffix used for session files.

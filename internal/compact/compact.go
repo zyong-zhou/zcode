@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zhouyong/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/llm"
 )
 
 // placeholder replaces a pruned tool result.

@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/zhouyong/zcode/internal/tools"
+	"github.com/zyong-zhou/zcode/internal/tools"
 )
 
 // maxToolNameLen matches the OpenAI tool-name limit (^[a-zA-Z0-9_-]{1,64}$).

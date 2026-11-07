@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zhouyong/zcode/internal/llm"
+	"github.com/zyong-zhou/zcode/internal/llm"
 )
 
 func TestEstimateTokens(t *testing.T) {
