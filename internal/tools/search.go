@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -64,22 +64,28 @@ func (t Search) Run(ctx context.Context, args string) (string, error) {
 	if in.MaxResults <= 0 {
 		in.MaxResults = 100
 	}
+	if in.MaxResults > maxSearchResults {
+		in.MaxResults = maxSearchResults
+	}
 	re, err := regexp.Compile(in.Pattern)
 	if err != nil {
 		return "", fmt.Errorf("search: bad pattern: %w", err)
 	}
 
-	abs, err := resolveUnder(t.Root, in.Path)
+	name, err := relName(in.Path)
 	if err != nil {
 		return "", fmt.Errorf("search: %w", err)
 	}
-	base, err := filepath.Abs(t.Root)
+	root, err := rootHandle(t.Root)
 	if err != nil {
 		return "", fmt.Errorf("search: %w", err)
 	}
+	defer root.Close()
 
 	var results []string
-	walkErr := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+	// Walking Root.FS() keeps traversal inside the root even when the tree
+	// contains links.
+	walkErr := fs.WalkDir(root.FS(), name, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -92,23 +98,38 @@ func (t Search) Run(ctx context.Context, args string) (string, error) {
 			}
 			return nil
 		}
+		// Skip links. DirEntry.Info reports the link itself (tiny), so a size
+		// guard alone would pass and the read would follow the link.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		if in.Include != "" {
-			if ok, _ := filepath.Match(in.Include, d.Name()); !ok {
+			ok, matchErr := filepath.Match(in.Include, d.Name())
+			if matchErr != nil {
+				return fmt.Errorf("search: bad include %q: %w", in.Include, matchErr)
+			}
+			if !ok {
 				return nil
 			}
 		}
 		if fi, infoErr := d.Info(); infoErr != nil || fi.Size() > maxSearchFileBytes {
 			return nil
 		}
-		data, readErr := os.ReadFile(p)
-		if readErr != nil || bytes.IndexByte(data, 0) >= 0 {
-			return nil // skip unreadable or binary files
-		}
-		rel, relErr := filepath.Rel(base, p)
-		if relErr != nil {
+		f, openErr := root.Open(p)
+		if openErr != nil {
 			return nil
 		}
-		rel = filepath.ToSlash(rel)
+		data, readErr := io.ReadAll(io.LimitReader(f, maxSearchFileBytes+1))
+		_ = f.Close()
+		// Bound the read as well: the size seen above may not match the size
+		// actually read.
+		if readErr != nil || len(data) > maxSearchFileBytes {
+			return nil
+		}
+		if bytes.IndexByte(data, 0) >= 0 {
+			return nil // skip binary files
+		}
+		rel := p
 
 		for i, line := range strings.Split(string(data), "\n") {
 			if !re.MatchString(line) {

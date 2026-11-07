@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -48,19 +46,27 @@ func (t ListDir) Run(ctx context.Context, args string) (string, error) {
 	if in.MaxDepth <= 0 {
 		in.MaxDepth = 3
 	}
+	if in.MaxDepth > maxListDepth {
+		in.MaxDepth = maxListDepth
+	}
 	if in.MaxEntries <= 0 {
 		in.MaxEntries = 500
 	}
+	if in.MaxEntries > maxListEntries {
+		in.MaxEntries = maxListEntries
+	}
 
-	abs, err := resolveUnder(t.Root, in.Path)
+	name, err := relName(in.Path)
 	if err != nil {
 		return "", fmt.Errorf("list_dir: %w", err)
 	}
-	base, err := filepath.Abs(t.Root)
+	root, err := rootHandle(t.Root)
 	if err != nil {
 		return "", fmt.Errorf("list_dir: %w", err)
 	}
-	info, err := os.Stat(abs)
+	defer root.Close()
+
+	info, err := root.Stat(name)
 	if err != nil {
 		return "", fmt.Errorf("list_dir: %w", err)
 	}
@@ -70,24 +76,26 @@ func (t ListDir) Run(ctx context.Context, args string) (string, error) {
 
 	var lines []string
 	truncated := false
-	walkErr := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+	// Walking Root.FS() keeps traversal inside the root: a link that points out
+	// of it yields an error instead of the linked directory's contents.
+	walkErr := fs.WalkDir(root.FS(), name, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip entries we cannot read
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if p == abs {
+		if p == name {
+			return nil
+		}
+		// Never report links: a link can hide what it really points at.
+		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 		if d.IsDir() && isIgnoredDir(d.Name()) {
 			return fs.SkipDir
 		}
-		rel, relErr := filepath.Rel(base, p)
-		if relErr != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
+		rel := p
 
 		if d.IsDir() {
 			if len(lines) >= in.MaxEntries {

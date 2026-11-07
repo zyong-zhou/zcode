@@ -76,7 +76,7 @@ func (s Store) Open(id string) (*Session, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("session: %q not found", id)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("session: open: %w", err)
 	}
@@ -129,7 +129,7 @@ func validateID(id string) error {
 
 func (s Store) create(id string) (*Session, error) {
 	path := filepath.Join(s.Dir, id+ext)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("session: create: %w", err)
 	}
@@ -140,7 +140,7 @@ func (s Store) ensure() error {
 	if strings.TrimSpace(s.Dir) == "" {
 		return fmt.Errorf("session: empty directory")
 	}
-	return os.MkdirAll(s.Dir, 0o755)
+	return os.MkdirAll(s.Dir, 0o700)
 }
 
 // List returns stored sessions, newest first.
@@ -230,7 +230,7 @@ func (s *Session) Reset() error {
 	if err := s.f.Close(); err != nil {
 		return fmt.Errorf("session: reset: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("session: reset: %w", err)
 	}
@@ -351,6 +351,10 @@ func (m *Manager) Latest() (string, error) { return m.store.Latest() }
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Normalise before comparing: ids arrive from user input, and an untrimmed
+	// id would delete the file while leaving m.cur pointing at it, silently
+	// discarding every later Append.
+	id = strings.TrimSpace(id)
 	if m.cur != nil && m.cur.id == id {
 		_ = m.cur.Close()
 		m.cur = nil
@@ -364,6 +368,8 @@ func (m *Manager) Delete(id string) error {
 func (m *Manager) Rename(id, newID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Normalise before comparing, for the same reason as Delete.
+	id, newID = strings.TrimSpace(id), strings.TrimSpace(newID)
 	active := m.cur != nil && m.cur.id == id
 	if active {
 		if err := m.cur.Close(); err != nil {
@@ -371,13 +377,18 @@ func (m *Manager) Rename(id, newID string) error {
 		}
 	}
 	if err := m.store.Rename(id, newID); err != nil {
+		if active {
+			m.cur = nil
+		}
 		return err
 	}
 	if active {
-		newID = strings.TrimSpace(newID)
 		path := filepath.Join(m.store.Dir, newID+ext)
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
+			// Close already cleared the handle, so Append would silently drop
+			// messages; going session-less makes the loss observable instead.
+			m.cur = nil
 			return fmt.Errorf("session: reopen after rename: %w", err)
 		}
 		m.cur.id = newID

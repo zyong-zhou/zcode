@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zyong-zhou/zcode/internal/backup"
@@ -226,8 +227,15 @@ func run() error {
 			for _, e := range errs {
 				fmt.Fprintln(os.Stderr, "note:", e)
 			}
-			var registered []string
-			sync := func() {
+			var (
+				registered []string
+				regMu      sync.Mutex
+			)
+			// syncTools is invoked from MCP notification goroutines, so the
+			// registered slice and the registry update must be serialised.
+			syncTools := func() {
+				regMu.Lock()
+				defer regMu.Unlock()
 				next := make(map[string]bool)
 				for _, t := range mgr.Tools() {
 					reg.Register(t)
@@ -243,8 +251,8 @@ func run() error {
 					registered = append(registered, t.Name())
 				}
 			}
-			sync()
-			mgr.SetOnChange(sync)
+			mgr.SetOnChange(syncTools)
+			syncTools()
 			defer func() { _ = mgr.Close() }()
 
 			mcpStatus = func() string {
@@ -271,6 +279,12 @@ func run() error {
 	}
 
 	base := llm.NewOpenAIClient(cfg.BaseURL, cfg.APIKey, cfg.Model)
+	// Keep the HTTP client's deadline in step with the configured timeout. The
+	// constructor's 120s default would abort long streaming responses that the
+	// configuration explicitly allows.
+	if cfg.TimeoutSeconds > 0 && base.HTTP != nil {
+		base.HTTP.Timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
 	var client llm.Client = llm.RetryClient{Inner: base, Attempts: 3, Base: 500 * time.Millisecond}
 
 	// Context compaction: summarize history once it nears the window. It is off

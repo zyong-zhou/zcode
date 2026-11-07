@@ -8,7 +8,30 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+// A large upstream error body must not be echoed in full into logs, traces and
+// the terminal; the field keeps the original text for programmatic callers.
+func TestStatusErrorTruncatesBody(t *testing.T) {
+	err := &StatusError{Code: 500, Body: strings.Repeat("x", 64<<10)}
+	msg := err.Error()
+	if len(msg) > errorBodyLimit+128 {
+		t.Errorf("Error() returned %d bytes, want it capped near %d", len(msg), errorBodyLimit)
+	}
+	if !strings.Contains(msg, "bytes omitted") {
+		t.Errorf("want an omission marker, got %q", msg)
+	}
+	if err.Body == "" {
+		t.Error("Body must keep the full upstream text")
+	}
+
+	// Truncation must not split a multi-byte rune.
+	msg = (&StatusError{Code: 500, Body: strings.Repeat("中", 4096)}).Error()
+	if !utf8.ValidString(msg) {
+		t.Error("Error() produced invalid UTF-8")
+	}
+}
 
 func TestOpenAIClientChat(t *testing.T) {
 	var got wireRequest

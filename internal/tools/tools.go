@@ -2,7 +2,10 @@
 // that keeps their order stable.
 package tools
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // Tool is a capability the agent can call.
 type Tool interface {
@@ -51,8 +54,12 @@ func Preview(t Tool, args string) string {
 	return ""
 }
 
-// Registry is a name-indexed, order-stable set of tools.
+// Registry is a name-indexed, order-stable set of tools. It is safe for
+// concurrent use: MCP tool-list changes are applied from a server notification
+// goroutine while the agent loop reads the registry, and an unsynchronised map
+// would make that a fatal runtime error rather than a recoverable panic.
 type Registry struct {
+	mu    sync.RWMutex
 	tools map[string]Tool
 	names []string
 }
@@ -71,6 +78,8 @@ func (r *Registry) Register(t Tool) {
 	if t == nil {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	name := t.Name()
 	if _, ok := r.tools[name]; !ok {
 		r.names = append(r.names, name)
@@ -81,6 +90,8 @@ func (r *Registry) Register(t Tool) {
 // Unregister removes the tool registered under name. It is a no-op when the
 // name is unknown.
 func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, ok := r.tools[name]; !ok {
 		return
 	}
@@ -95,12 +106,16 @@ func (r *Registry) Unregister(name string) {
 
 // Get returns the tool registered under name.
 func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
 	return t, ok
 }
 
 // All returns tools in registration order.
 func (r *Registry) All() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Tool, 0, len(r.names))
 	for _, n := range r.names {
 		out = append(out, r.tools[n])

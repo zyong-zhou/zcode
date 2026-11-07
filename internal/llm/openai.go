@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -21,8 +22,22 @@ type StatusError struct {
 	Body string
 }
 
+// errorBodyLimit caps how much of an upstream error body reaches logs, traces
+// and the terminal. A gateway that echoes the request back would otherwise dump
+// megabytes of conversation into every error message. The untruncated text
+// stays available to callers through Body.
+const errorBodyLimit = 1 << 10 // 1 KiB
+
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("llm: status %d: %s", e.Code, strings.TrimSpace(e.Body))
+	body := strings.TrimSpace(e.Body)
+	if len(body) > errorBodyLimit {
+		n := errorBodyLimit
+		for n > 0 && !utf8.RuneStart(body[n]) {
+			n--
+		}
+		body = body[:n] + fmt.Sprintf("… [%d bytes omitted]", len(body)-n)
+	}
+	return fmt.Sprintf("llm: status %d: %s", e.Code, body)
 }
 
 // Retryable reports whether the status is worth retrying (rate limit or 5xx).

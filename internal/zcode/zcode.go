@@ -447,10 +447,18 @@ func (a *Agent) run(ctx context.Context, msgs []llm.Message) (string, error) {
 			resp, err = a.Client.Chat(ctx, req)
 		}
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
-				msg := fmt.Sprintf("zcode: timed out after %s", a.Timeout)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				// Only claim a duration when one was actually configured: an
+				// unset Timeout means the deadline came from the caller.
+				msg := "zcode: timed out"
+				if a.Timeout > 0 {
+					msg = fmt.Sprintf("zcode: timed out after %s", a.Timeout)
+				}
 				a.emit(Event{Step: step, Kind: EventLimit, Err: msg})
 				return "", fmt.Errorf("%s", msg)
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return "", fmt.Errorf("zcode: canceled")
 			}
 			return "", fmt.Errorf("zcode: chat: %w", err)
 		}

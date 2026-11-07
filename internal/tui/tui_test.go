@@ -145,6 +145,57 @@ func TestModelPermissionDeny(t *testing.T) {
 	}
 }
 
+// The approval request crosses a goroutine boundary: the agent goroutine sends
+// permMsg and blocks on the reply, while the UI loop owns the prompt state. The
+// request must therefore travel inside the message, not through shared fields.
+func TestPermissionPromptAcrossGoroutines(t *testing.T) {
+	m := newTestModel()
+	msgs := make(chan permMsg, 1)
+	answers := make(chan bool, 1)
+
+	go func() {
+		msg := permMsg{
+			req:   zcode.PermissionRequest{Tool: "run_command", Args: "{}"},
+			reply: make(chan bool, 1),
+		}
+		msgs <- msg
+		answers <- <-msg.reply
+	}()
+
+	msg := <-msgs
+	_, _ = m.Update(msg)
+	if m.permReq == nil {
+		t.Fatal("permMsg did not install a pending prompt")
+	}
+	if v := m.View(); !strings.Contains(v, "run_command") {
+		t.Errorf("prompt not rendered:\n%s", v)
+	}
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if got := <-answers; !got {
+		t.Error("y should approve")
+	}
+	if m.permReq != nil {
+		t.Error("prompt not cleared after answering")
+	}
+}
+
+// Enter must not approve: it is the key a user is most likely to press out of
+// habit, and approving by accident would run the pending tool.
+func TestPermissionEnterDoesNotApprove(t *testing.T) {
+	m := newTestModel()
+	reply := make(chan bool, 1)
+	m.permReq = &zcode.PermissionRequest{Tool: "run_command"}
+	m.permReply = reply
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := <-reply; got {
+		t.Error("Enter must not approve a pending tool call")
+	}
+	if m.permReq != nil {
+		t.Error("prompt not cleared after answering")
+	}
+}
+
 func TestModelToolActivity(t *testing.T) {
 	m := newTestModel()
 	_, _ = m.Update(eventMsg(zcode.Event{Kind: zcode.EventToolCall, Step: 1, Tool: "list_dir", Args: `{"path":"."}`}))

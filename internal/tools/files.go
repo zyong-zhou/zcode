@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // ReadFile reads a UTF-8 text file under Root. Output is capped: at most
@@ -50,23 +51,36 @@ func (t ReadFile) Run(_ context.Context, args string) (string, error) {
 	if err := json.Unmarshal([]byte(args), &in); err != nil {
 		return "", fmt.Errorf("read_file: bad arguments: %w", err)
 	}
-	abs, err := resolveUnder(t.Root, in.Path)
+	name, err := relName(in.Path)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	f, err := os.Open(abs)
+	root, err := rootHandle(t.Root)
+	if err != nil {
+		return "", fmt.Errorf("read_file: %w", err)
+	}
+	defer root.Close()
+
+	f, err := root.Open(name)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 	defer f.Close()
 
-	data, err := io.ReadAll(io.LimitReader(f, hardReadLimit))
+	data, err := io.ReadAll(io.LimitReader(f, hardReadLimit+1))
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 	out := string(data)
-	if len(data) == hardReadLimit {
-		out += "\n... [file cut off at 8 MiB] ..."
+	if len(data) > hardReadLimit {
+		// Read one byte past the limit so a file of exactly hardReadLimit bytes
+		// is not reported as truncated, and cut on a rune boundary so the text
+		// stays valid UTF-8.
+		n := hardReadLimit
+		for n > 0 && !utf8.RuneStart(data[n]) {
+			n--
+		}
+		out = string(data[:n]) + "\n... [file cut off at 8 MiB] ..."
 	}
 
 	maxBytes := in.MaxBytes
@@ -125,44 +139,62 @@ func (t WriteFile) Run(_ context.Context, args string) (string, error) {
 	if err := json.Unmarshal([]byte(args), &in); err != nil {
 		return "", fmt.Errorf("write_file: bad arguments: %w", err)
 	}
-	abs, err := resolveUnder(t.Root, in.Path)
+	name, err := relName(in.Path)
 	if err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	root, err := rootHandle(t.Root)
+	if err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
+	defer root.Close()
+
+	if dir := filepath.Dir(name); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("write_file: %w", err)
+		}
+	}
 	if t.Backup != nil {
+		abs, absErr := filepath.Abs(filepath.Join(t.Root, name))
+		if absErr != nil {
+			return "", fmt.Errorf("write_file: %w", absErr)
+		}
 		if err := t.Backup(in.Path, abs); err != nil {
 			return "", fmt.Errorf("write_file: %w", err)
 		}
 	}
-	if err := os.WriteFile(abs, []byte(in.Content), 0o644); err != nil {
+	if err := root.WriteFile(name, []byte(in.Content), 0o644); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(in.Content), in.Path), nil
 }
 
-// resolveUnder joins root and rel and rejects any result that escapes root.
-// All file-access tools must route paths through this helper.
-func resolveUnder(root, rel string) (string, error) {
+// rootHandle opens the project root for containment-checked access. Every
+// file-access tool routes through os.Root rather than a lexical path check:
+// a lexical check cannot see through a symbolic link or an NTFS junction, and
+// filepath.EvalSymlinks does not resolve junctions on Windows at all. os.Root
+// rejects any path whose components leave the root, including via links.
+func rootHandle(root string) (*os.Root, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, fmt.Errorf("project root is empty")
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, fmt.Errorf("open project root: %w", err)
+	}
+	return r, nil
+}
+
+// relName converts a model-supplied path into the root-relative name os.Root
+// expects. Absolute paths and paths escaping the root are rejected by os.Root
+// itself, so they are passed through rather than pre-judged here.
+func relName(rel string) (string, error) {
 	if strings.TrimSpace(rel) == "" {
 		return "", fmt.Errorf("path is empty")
 	}
-	base, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
+	name := filepath.Clean(filepath.FromSlash(rel))
+	if name == "" {
+		return ".", nil
 	}
-	abs, err := filepath.Abs(filepath.Join(base, rel))
-	if err != nil {
-		return "", err
-	}
-	relToBase, err := filepath.Rel(base, abs)
-	if err != nil {
-		return "", err
-	}
-	if relToBase == ".." || strings.HasPrefix(relToBase, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes project root", rel)
-	}
-	return abs, nil
+	return name, nil
 }

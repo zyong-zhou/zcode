@@ -7,8 +7,79 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
+
+// hardExecCaptureLimit bounds how much command output is buffered in memory,
+// independent of MaxOutputBytes (which only caps what is handed to the model).
+// Without it a runaway process (think `yes`) would be buffered in full and
+// exhaust memory before truncation ever ran.
+const hardExecCaptureLimit = 8 << 20 // 8 MiB
+
+// waitDelay bounds how long Wait keeps waiting for a command's output pipes
+// after the process itself has exited or been killed. A command that leaves a
+// grandchild holding the inherited handles would otherwise keep the call
+// blocked past its deadline.
+const waitDelay = 5 * time.Second
+
+// cappedWriter buffers at most limit bytes, keeping the head and the tail and
+// discarding the middle, so total memory stays bounded while the diagnostically
+// useful parts (the start, and the error at the end) survive. It is safe for
+// concurrent use because os/exec may copy stdout and stderr on separate
+// goroutines.
+type cappedWriter struct {
+	mu    sync.Mutex
+	head  []byte
+	tail  []byte
+	limit int
+	total int
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	limit := w.limit
+	if limit <= 0 {
+		limit = hardExecCaptureLimit
+	}
+	half := limit / 2
+
+	n := len(p)
+	w.total += n
+
+	if room := half - len(w.head); room > 0 {
+		take := room
+		if take > len(p) {
+			take = len(p)
+		}
+		w.head = append(w.head, p[:take]...)
+		p = p[take:]
+	}
+	if len(p) > 0 {
+		w.tail = append(w.tail, p...)
+		if len(w.tail) > half {
+			drop := len(w.tail) - half
+			w.tail = append(w.tail[:0], w.tail[drop:]...)
+		}
+	}
+	return n, nil
+}
+
+// String returns the captured output, with a marker when bytes were dropped.
+func (w *cappedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	out := string(w.head) + string(w.tail)
+	if omitted := w.total - len(w.head) - len(w.tail); omitted > 0 {
+		out = string(w.head) +
+			fmt.Sprintf("\n... [%d bytes omitted] ...\n", omitted) +
+			string(w.tail)
+	}
+	return out
+}
 
 // RunCommand executes an executable with arguments inside Dir. It never invokes
 // a shell, so arguments are not subject to shell interpolation.
@@ -26,7 +97,7 @@ func (t RunCommand) Name() string { return "run_command" }
 func (t RunCommand) PlanSafe() bool { return false }
 
 func (t RunCommand) Description() string {
-	return "Run an executable with arguments inside the project root and return its combined stdout/stderr."
+	return "Run an executable with arguments and return its combined stdout/stderr. The executable is invoked directly (no shell) with the project root as its working directory; it is not sandboxed and may touch paths outside the project."
 }
 
 func (t RunCommand) Parameters() map[string]any {
@@ -79,16 +150,27 @@ func (t RunCommand) Run(ctx context.Context, args string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	capture := &cappedWriter{limit: hardExecCaptureLimit}
 	cmd := exec.CommandContext(ctx, in.Command, in.Args...)
 	if t.Dir != "" {
 		cmd.Dir = t.Dir
 	}
-	out, err := cmd.CombinedOutput()
-	result := truncate(string(out), t.MaxOutputBytes)
-	if ctx.Err() == context.DeadlineExceeded {
+	// Both streams share one writer so their interleaving is preserved.
+	cmd.Stdout = capture
+	cmd.Stderr = capture
+	cmd.WaitDelay = waitDelay
+
+	err := cmd.Run()
+	result := truncate(capture.String(), t.MaxOutputBytes)
+
+	switch {
+	case ctx.Err() == context.DeadlineExceeded:
 		return result, fmt.Errorf("run_command: timed out after %s", timeout)
-	}
-	if err != nil {
+	case errors.Is(err, exec.ErrWaitDelay):
+		// The command itself finished; a surviving child kept the output pipes
+		// open past waitDelay. Report what we captured rather than failing.
+		return result, nil
+	case err != nil:
 		return result, fmt.Errorf("run_command: %w%s", err, commandHint(in.Command, err))
 	}
 	return result, nil

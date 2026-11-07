@@ -61,7 +61,7 @@ func (s Store) Snapshot(source, abs string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("backup: read: %w", err)
 	}
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return "", fmt.Errorf("backup: mkdir: %w", err)
 	}
 	// The id is <unixnano>-<base64url(source)>. A coarse clock can return the
@@ -75,7 +75,7 @@ func (s Store) Snapshot(source, abs string) (string, error) {
 			break
 		}
 	}
-	if err := os.WriteFile(filepath.Join(s.Dir, id+ext), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(s.Dir, id+ext), data, 0o600); err != nil {
 		return "", fmt.Errorf("backup: write: %w", err)
 	}
 	// Retention is best-effort: a pruning failure must not block the write.

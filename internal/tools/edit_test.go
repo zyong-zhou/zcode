@@ -64,7 +64,9 @@ func TestEditToolValidationAndEscape(t *testing.T) {
 	if _, err := (Edit{Root: root}).Run(ctx, `{"path":"a.txt","edits":[{"old":"","new":"y"}]}`); err == nil || !strings.Contains(err.Error(), "old is required") {
 		t.Errorf("empty old err = %v", err)
 	}
-	if _, err := (Edit{Root: root}).Run(ctx, `{"path":"../escape.txt","edits":[{"old":"a","new":"b"}]}`); err == nil || !strings.Contains(err.Error(), "escapes project root") {
+	// The rejection now comes from os.Root ("path escapes from parent"), so
+	// assert on the fact of the escape rather than on one wording.
+	if _, err := (Edit{Root: root}).Run(ctx, `{"path":"../escape.txt","edits":[{"old":"a","new":"b"}]}`); err == nil || !strings.Contains(err.Error(), "escapes") {
 		t.Errorf("escape err = %v", err)
 	}
 	if _, err := (Edit{Root: root}).Run(ctx, `{"path":"missing.txt","edits":[{"old":"a","new":"b"}]}`); err == nil {

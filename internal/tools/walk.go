@@ -1,5 +1,15 @@
 package tools
 
+import "strings"
+
+// Hard caps on traversal size. The model supplies max_entries and max_results,
+// so without an upper bound one call could ask for unbounded memory.
+const (
+	maxListEntries   = 5000
+	maxListDepth     = 32
+	maxSearchResults = 1000
+)
+
 // ignoredDirs are directory names skipped by list_dir and search so their
 // output stays focused. Agent-visible file tools should reuse isIgnoredDir so
 // traversal behavior stays consistent.
@@ -16,4 +26,6 @@ var ignoredDirs = map[string]bool{
 	"venv":         true,
 }
 
-func isIgnoredDir(name string) bool { return ignoredDirs[name] }
+// isIgnoredDir matches case-insensitively, because Windows checkouts routinely
+// carry names such as ".Git" or "Node_Modules".
+func isIgnoredDir(name string) bool { return ignoredDirs[strings.ToLower(name)] }

@@ -121,9 +121,9 @@ func Run(ag *zcode.Agent, opts Options) error {
 	if ag.OnPermission == nil {
 		ag.OnPermission = func(req zcode.PermissionRequest) bool {
 			reply := make(chan bool, 1)
-			m.permReq = &req
-			m.permReply = reply
-			p.Send(permMsg{})
+			// The request travels inside the message. The agent goroutine must
+			// not touch model state, which only the UI loop may read or write.
+			p.Send(permMsg{req: req, reply: reply})
 			return <-reply
 		}
 	}
@@ -150,9 +150,12 @@ type block struct {
 
 // Messages exchanged between the running agent goroutine and the UI loop.
 type (
-	deltaMsg   string
-	eventMsg   zcode.Event
-	permMsg    struct{}
+	deltaMsg string
+	eventMsg zcode.Event
+	permMsg  struct {
+		req   zcode.PermissionRequest
+		reply chan bool
+	}
 	compactMsg struct {
 		changed bool
 		err     error
@@ -200,9 +203,9 @@ type model struct {
 	turnStart time.Time
 	lastCost  time.Duration
 
-	// Pending tool-approval prompt. permReq is set by the agent goroutine in
-	// Run's OnPermission before it sends permMsg, so the channel happens-before
-	// edge makes reading it from the UI loop safe without a mutex.
+	// Pending tool-approval prompt, owned exclusively by the UI loop. The agent
+	// goroutine hands the request over inside permMsg rather than writing these
+	// fields, so no state is shared across goroutines.
 	permReq   *zcode.PermissionRequest
 	permReply chan bool
 
@@ -272,6 +275,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handleEvent(zcode.Event(msg))
 		return m, nil
 	case permMsg:
+		req := msg.req
+		m.permReq = &req
+		m.permReply = msg.reply
 		m.layout()
 		return m, nil
 	case compactMsg:
@@ -753,11 +759,13 @@ func (m *model) runCustom(c command.Command, args string) tea.Cmd {
 	return m.run(c.Expand(args))
 }
 
-// answerPermission resolves a pending approval prompt. Only y/Y/Enter approve;
-// any other key denies, so a stray keypress is always safe.
+// answerPermission resolves a pending approval prompt. Only y/Y approve; any
+// other key denies, so a stray keypress is always safe. Enter is deliberately
+// excluded: it is the key a user is most likely to press out of habit, and
+// approving by accident would run the pending tool.
 func (m *model) answerPermission(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
-	approve := key == "y" || key == "Y" || key == "enter"
+	approve := key == "y" || key == "Y"
 	m.permReq = nil
 	if m.permReply != nil {
 		select {

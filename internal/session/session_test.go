@@ -10,6 +10,46 @@ import (
 	"github.com/zyong-zhou/zcode/internal/llm"
 )
 
+// An id with surrounding whitespace must still match the active session, and
+// deleting the active session must leave the manager session-less rather than
+// holding a handle to a file that no longer exists.
+func TestManagerDeleteTrimsActiveID(t *testing.T) {
+	m := NewManager(Store{Dir: t.TempDir()})
+	id, err := m.New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.Delete("  " + id + "  "); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got, _, _ := m.Current(); got != "" {
+		t.Errorf("active session = %q after delete, want none", got)
+	}
+}
+
+// Renaming the active session with a padded id must work, and the reopened
+// transcript must keep accepting messages instead of silently dropping them.
+func TestManagerRenameTrimsActiveIDAndKeepsWriting(t *testing.T) {
+	m := NewManager(Store{Dir: t.TempDir()})
+	defer func() { _ = m.Close() }()
+	id, err := m.New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.Rename(" "+id+" ", "renamed"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if got, _, _ := m.Current(); got != "renamed" {
+		t.Errorf("active id = %q, want %q", got, "renamed")
+	}
+	if err := m.Append(llm.Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, _, n := m.Current(); n != 1 {
+		t.Errorf("messages = %d after rename, want 1 (silent loss)", n)
+	}
+}
+
 func TestSessionRoundTrip(t *testing.T) {
 	store := Store{Dir: t.TempDir()}
 	s, err := store.New()

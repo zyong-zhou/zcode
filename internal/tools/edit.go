@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -89,11 +89,26 @@ func (t Edit) Run(_ context.Context, args string) (string, error) {
 		return "", fmt.Errorf("edit: at least one edit is required")
 	}
 
-	path, err := resolveUnder(t.Root, in.Path)
+	name, err := relName(in.Path)
 	if err != nil {
 		return "", fmt.Errorf("edit: %w", err)
 	}
-	data, err := os.ReadFile(path)
+	root, err := rootHandle(t.Root)
+	if err != nil {
+		return "", fmt.Errorf("edit: %w", err)
+	}
+	defer root.Close()
+
+	info, err := root.Stat(name)
+	if err != nil {
+		return "", fmt.Errorf("edit: %w", err)
+	}
+	// Editing streams the whole file through memory, so refuse oversized files
+	// rather than loading them: unlike read_file there is no incremental path.
+	if info.Size() > hardReadLimit {
+		return "", fmt.Errorf("edit: %s is %d bytes, larger than the %d-byte edit limit", in.Path, info.Size(), hardReadLimit)
+	}
+	data, err := root.ReadFile(name)
 	if err != nil {
 		return "", fmt.Errorf("edit: %w", err)
 	}
@@ -116,16 +131,16 @@ func (t Edit) Run(_ context.Context, args string) (string, error) {
 	}
 
 	if t.Backup != nil {
-		if err := t.Backup(in.Path, path); err != nil {
+		abs, absErr := filepath.Abs(filepath.Join(t.Root, name))
+		if absErr != nil {
+			return "", fmt.Errorf("edit: %w", absErr)
+		}
+		if err := t.Backup(in.Path, abs); err != nil {
 			return "", fmt.Errorf("edit: %w", err)
 		}
 	}
 
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	}
-	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+	if err := root.WriteFile(name, []byte(content), info.Mode().Perm()); err != nil {
 		return "", fmt.Errorf("edit: write: %w", err)
 	}
 	return fmt.Sprintf("edited %s (%d edit(s))", in.Path, len(in.Edits)), nil
